@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+.venv*/
+venv/
+ENV/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+*.spec.bak
+
+# PyInstaller
+*.manifest
+
+# SQLite runtime data (telemetry is local per-machine state, not source)
+database/*.db
+database/*.db-*
+*.db.corrupt.*
+
+# Logs
+logs/
+*.log
+
+# IDE / editors
+.idea/
+.vs/
+.vscode/
+*.sublime-*
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Secrets (never commit local overrides)
+.env
+*.env
+config.local.py
