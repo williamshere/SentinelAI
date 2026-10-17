@@ -71,7 +71,7 @@ AUTO_DIAGNOSTICS_ENABLED = False
 LLM_BACKEND = "auto"
 LM_STUDIO_URL = "http://localhost:1234/v1"
 OLLAMA_URL = "http://localhost:11434"
-OLLAMA_MODEL = "gemma2:9b"  # Switchable: "gemma2:9b", "gemma2:27b", "gemma3:latest"
+OLLAMA_MODEL = "nvidia/nemotron-3.5-bolt-74b-a9b"  # Switchable: "nvidia/nemotron-3.5-bolt-74b-a9b" (LM Studio catalog, NVIDIA 2-bit 24GB), "gemma2:9b" (Ollama fallback)
 OLLAMA_TIMEOUT_SECONDS = 25.0
 
 # Chat UI watchdog: re-enable the input if a local inference call runs longer
