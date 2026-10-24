@@ -3,10 +3,11 @@ ui/dashboard.py - Sentinel AI Security & Telemetry Dashboard.
 Refactored with flat QPushButton navigation, weighted PC Health Score,
 CPU temp/wattage monitoring, and Automated Event-Driven AI Diagnostics.
 """
+import csv
 import sys
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # 1. Ensure project root is in sys.path
@@ -20,6 +21,8 @@ from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QPixma
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
+    QFileDialog,
     QFrame,
     QInputDialog,
     QGridLayout,
@@ -134,7 +137,8 @@ from sensors.disk import get_disk_info
 from sensors.gpu import get_gpu_info
 from sensors.ram import get_ram_info
 from ui.alert_manager import AlertManager, AlertState
-from ui.chart_widget import TelemetryChartWidget
+from database.manager import HISTORY_METRIC_COLUMNS
+from ui.chart_widget import HistoryChartWidget, TelemetryChartWidget
 
 
 
@@ -339,6 +343,7 @@ class SentinelDashboard(QMainWindow):
         self.alerts_view = self._create_alerts_view()
         self.chat_view = self._create_chat_view()
         self.settings_view = self._create_settings_view()
+        self.history_view = self._create_history_view()
 
         self.stack.addWidget(self.overview_view)   # Index 0
         self.stack.addWidget(self.threats_view)    # Index 1
@@ -346,6 +351,7 @@ class SentinelDashboard(QMainWindow):
         self.stack.addWidget(self.alerts_view)     # Index 3
         self.stack.addWidget(self.chat_view)       # Index 4
         self.stack.addWidget(self.settings_view)   # Index 5
+        self.stack.addWidget(self.history_view)    # Index 6
 
         main_layout.addWidget(self.stack, 1)
 
@@ -424,6 +430,7 @@ class SentinelDashboard(QMainWindow):
             ("🚨  Alerts", 3),
             ("💬  Ask Sentinel", 4),
             ("⚙️  Settings", 5),
+            ("📈  History", 6),
         ]
 
         self.nav_buttons = []
@@ -453,6 +460,8 @@ class SentinelDashboard(QMainWindow):
         """Switches current visible view in QStackedWidget and ensures button sync."""
         if 0 <= index < self.stack.count():
             self.stack.setCurrentIndex(index)
+            if index == 6:
+                self._refresh_history()
             button = self.nav_button_group.button(index)
             if button and not button.isChecked():
                 button.setChecked(True)
@@ -1098,6 +1107,164 @@ class SentinelDashboard(QMainWindow):
             pass
 
         return view
+
+    # ------------------------------------------------------------------
+    # History & Trends (blue-and-black theme)
+    # ------------------------------------------------------------------
+    _HISTORY_RANGES = [("Last 1 hour", 1), ("Last 24 hours", 24), ("Last 7 days", 168)]
+
+    def _create_history_view(self) -> QWidget:
+        """View 6: History & Trends - long-range telemetry, blue on black."""
+        view = QWidget()
+        view.setStyleSheet("background-color: #000000;")
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        header = QLabel("📈 History & Trends")
+        header.setStyleSheet("font-size: 28px; font-weight: bold; color: #dbeafe; background: transparent;")
+        layout.addWidget(header)
+        subheader = QLabel("Long-range telemetry from the local database (blue markers = gaming sessions)")
+        subheader.setStyleSheet("font-size: 13px; color: #60a5fa; background: transparent;")
+        layout.addWidget(subheader)
+
+        combo_style = (
+            "QComboBox { background-color: #020617; color: #dbeafe; border: 1px solid #2563eb; "
+            "border-radius: 6px; padding: 6px 10px; font-size: 13px; } "
+            "QComboBox:hover { border-color: #38bdf8; }"
+        )
+        btn_style = (
+            "QPushButton { background-color: #2563eb; color: #ffffff; font-size: 13px; font-weight: 600; "
+            "padding: 7px 16px; border-radius: 8px; border: none; } "
+            "QPushButton:hover { background-color: #1d4ed8; }"
+        )
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Range:"))
+        self.history_range_combo = QComboBox()
+        self.history_range_combo.setStyleSheet(combo_style)
+        for label, hours in self._HISTORY_RANGES:
+            self.history_range_combo.addItem(label, hours)
+        self.history_range_combo.setCurrentIndex(1)
+        controls.addWidget(self.history_range_combo)
+        controls.addWidget(QLabel("Metric:"))
+        self.history_metric_combo = QComboBox()
+        self.history_metric_combo.setStyleSheet(combo_style)
+        for key, label in HISTORY_METRIC_COLUMNS.items():
+            self.history_metric_combo.addItem(label, key)
+        controls.addWidget(self.history_metric_combo)
+        btn_refresh = QPushButton("↻ Refresh")
+        btn_refresh.setStyleSheet(btn_style)
+        btn_refresh.setCursor(Qt.PointingHandCursor)
+        btn_refresh.clicked.connect(self._refresh_history)
+        controls.addWidget(btn_refresh)
+        btn_export = QPushButton("⬇ Export CSV")
+        btn_export.setStyleSheet(btn_style)
+        btn_export.setCursor(Qt.PointingHandCursor)
+        btn_export.clicked.connect(self._export_history_csv)
+        controls.addWidget(btn_export)
+        controls.addStretch()
+        for lbl in controls.findChildren(QLabel):
+            lbl.setStyleSheet("color: #93c5fd; font-size: 13px; background: transparent;")
+        layout.addLayout(controls)
+        self.history_range_combo.currentIndexChanged.connect(self._refresh_history)
+        self.history_metric_combo.currentIndexChanged.connect(self._refresh_history)
+
+        stats_row = QHBoxLayout()
+        self.history_stat_labels = {}
+        for name in ("Minimum", "Average", "Peak", "Samples"):
+            card = QFrame()
+            card.setStyleSheet(
+                "QFrame { background-color: #020617; border: 1px solid #1e3a8a; border-radius: 10px; padding: 8px; } "
+                "QLabel { background: transparent; border: none; padding: 0px; }"
+            )
+            card_layout = QVBoxLayout(card)
+            title = QLabel(name)
+            title.setStyleSheet("font-size: 11px; font-weight: 700; color: #60a5fa;")
+            value = QLabel("—")
+            value.setStyleSheet("font-size: 20px; font-weight: bold; color: #38bdf8;")
+            card_layout.addWidget(title)
+            card_layout.addWidget(value)
+            stats_row.addWidget(card)
+            self.history_stat_labels[name] = value
+        layout.addLayout(stats_row)
+
+        self.history_chart = HistoryChartWidget(title="History")
+        layout.addWidget(self.history_chart)
+
+        sessions_title = QLabel("Gaming sessions in range")
+        sessions_title.setStyleSheet("font-size: 14px; font-weight: 600; color: #bfdbfe; background: transparent;")
+        layout.addWidget(sessions_title)
+        self.history_sessions_list = QListWidget()
+        self.history_sessions_list.setStyleSheet(
+            "QListWidget { background-color: #000000; border: 1px solid #1e3a8a; border-radius: 8px; padding: 6px; color: #bfdbfe; }"
+        )
+        self.history_sessions_list.setMaximumHeight(110)
+        layout.addWidget(self.history_sessions_list)
+
+        self.history_status = QLabel("")
+        self.history_status.setStyleSheet("font-size: 12px; color: #60a5fa; background: transparent;")
+        layout.addWidget(self.history_status)
+        return view
+
+    def _history_window(self):
+        from datetime import timezone as _tz
+        hours = float(self.history_range_combo.currentData() or 24)
+        end = datetime.now(_tz.utc)
+        return hours, end - timedelta(hours=hours), end
+
+    def _refresh_history(self):
+        """Reload chart, stats, and session markers for the current pickers."""
+        try:
+            hours, start, end = self._history_window()
+            metric = self.history_metric_combo.currentData()
+            label = HISTORY_METRIC_COLUMNS.get(metric, metric)
+            unit = "°C" if metric.endswith("_temp") else "%"
+            series = self.db_manager.get_history_series(hours=hours, metric=metric)
+            stats = self.db_manager.get_history_stats(hours=hours, metric=metric)
+            sessions = self.db_manager.get_gaming_sessions_in_range(start, end)
+            self.history_chart.title_label.setText(label)
+            self.history_chart.set_series(series, sessions=sessions, range_start=start.replace(tzinfo=None), range_end=end.replace(tzinfo=None), unit=unit)
+
+            def fmt(v):
+                return "—" if v is None else f"{v:.1f}{unit}"
+
+            self.history_stat_labels["Minimum"].setText(fmt(stats["min"]))
+            self.history_stat_labels["Average"].setText(fmt(stats["avg"]))
+            self.history_stat_labels["Peak"].setText(fmt(stats["max"]))
+            self.history_stat_labels["Samples"].setText(str(stats["count"]))
+            self.history_sessions_list.clear()
+            if sessions:
+                for s in sessions:
+                    dur = s.get("duration_seconds")
+                    dur_txt = f" • {int(dur) // 60}m" if dur else ""
+                    self.history_sessions_list.addItem(
+                        f"🎮 {s.get('game_title', 'Game')} • {s.get('start_time', '')} → {s.get('end_time') or 'running'}{dur_txt}"
+                    )
+            else:
+                self.history_sessions_list.addItem("No gaming sessions in this range.")
+            self.history_status.setText(f"Loaded {stats['count']} samples • {label} • last {int(hours)}h")
+        except Exception as exc:
+            self.history_status.setText(f"History unavailable: {exc}")
+
+    def _export_history_csv(self):
+        """Export full snapshots for the selected range to a CSV file."""
+        try:
+            hours, start, end = self._history_window()
+            rows = self.db_manager.get_snapshots_in_range(start, end)
+            if not rows:
+                self.history_status.setText("Nothing to export - no samples in this range yet.")
+                return
+            default_name = f"sentinel_history_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+            path, _filter = QFileDialog.getSaveFileName(self, "Export History CSV", default_name, "CSV Files (*.csv)")
+            if not path:
+                return
+            with open(path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+            self.history_status.setText(f"Exported {len(rows)} rows to {path}")
+        except Exception as exc:
+            self.history_status.setText(f"Export failed: {exc}")
 
     def _create_chat_view(self) -> QWidget:
         """View 4: Interactive 'Ask Sentinel' AI Chat with live telemetry and wear context injection."""

@@ -25,6 +25,7 @@ except ImportError:
 try:
     from config import (
         LLM_BACKEND,
+        LM_STUDIO_API_KEY,
         LM_STUDIO_URL,
         OLLAMA_MODEL,
         OLLAMA_TIMEOUT_SECONDS,
@@ -32,6 +33,13 @@ try:
     )
 except ImportError:
     LLM_BACKEND = "auto"
+    LM_STUDIO_API_KEY = ""
+    try:
+        from config import LM_STUDIO_API_KEY as _CFG_KEY
+        if _CFG_KEY:
+            LM_STUDIO_API_KEY = _CFG_KEY
+    except Exception:
+        pass
     LM_STUDIO_URL = "http://127.0.0.1:1234/v1"
     OLLAMA_URL = "http://127.0.0.1:11434"
     OLLAMA_MODEL = "gemma2:9b"
@@ -74,12 +82,14 @@ class ChatEngine:
     def __init__(
         self,
         backend: str = LLM_BACKEND,
+        api_key: str = LM_STUDIO_API_KEY,
         lm_studio_url: str = LM_STUDIO_URL,
         ollama_url: str = OLLAMA_URL,
         model: str = OLLAMA_MODEL,
         timeout_seconds: float = OLLAMA_TIMEOUT_SECONDS,
     ):
         self.backend = backend.lower()
+        self.api_key = (api_key or "").strip()
         self.lm_studio_url = lm_studio_url.rstrip("/").replace("localhost", "127.0.0.1")
         self.ollama_url = ollama_url.rstrip("/").replace("localhost", "127.0.0.1")
         self.model = model
@@ -100,9 +110,22 @@ class ChatEngine:
         """Clears the conversational history."""
         self.history.clear()
 
+    def _lm_headers(self) -> dict:
+        h = {"Content-Type": "application/json"}
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
+
     def get_server_status(self) -> dict[str, Any]:
         """Instant (<2ms) probe of local backend readiness."""
-        lm_online = is_port_open("127.0.0.1", 1234, timeout=0.15)
+        try:
+            from urllib.parse import urlparse as _urlparse
+            _p = _urlparse(self.lm_studio_url)
+            _host = _p.hostname or "127.0.0.1"
+            _port = _p.port or 1234
+            lm_online = is_port_open(_host, _port, timeout=0.15)
+        except Exception:
+            lm_online = is_port_open("127.0.0.1", 1234, timeout=0.15)
         ollama_online = is_port_open("127.0.0.1", 11434, timeout=0.15) if not lm_online else False
         return {
             "lm_studio": lm_online,
@@ -197,8 +220,8 @@ class ChatEngine:
                 # Fast model name probe
                 model_to_use = self.model or "google/gemma-2-9b"
                 try:
-                    probe_req = urllib.request.Request("http://127.0.0.1:1234/v1/models", headers={"Content-Type": "application/json"})
-                    with urllib.request.urlopen(probe_req, timeout=1.5) as resp:
+                    probe_req = urllib.request.Request(self.lm_studio_url + "/models", headers=self._lm_headers())
+                    with urllib.request.urlopen(probe_req, timeout=1.5) as resp:  # 401 here means token missing/wrong
                         if resp.status == 200:
                             mdata = json.loads(resp.read().decode("utf-8"))
                             models = mdata.get("data", []) or mdata.get("models", [])
@@ -212,7 +235,7 @@ class ChatEngine:
                     messages.append({"role": turn["role"], "content": turn["content"]})
                 messages.append({"role": "user", "content": user_message})
 
-                url = "http://127.0.0.1:1234/v1/chat/completions"
+                url = self.lm_studio_url + "/chat/completions"
                 payload = {
                     "model": model_to_use,
                     "messages": messages,
@@ -224,7 +247,7 @@ class ChatEngine:
                 req = urllib.request.Request(
                     url,
                     data=data_bytes,
-                    headers={"Content-Type": "application/json"},
+                    headers=self._lm_headers(),
                     method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
@@ -243,7 +266,11 @@ class ChatEngine:
                                     "timestamp": now_str,
                                 }
             except Exception as e:
-                logger.debug(f"LM Studio query failed or timed out: {e}")
+                msg = str(e)
+                if "401" in msg or "invalid_api_key" in msg:
+                    logger.warning("LM Studio 401: set LM_STUDIO_API_KEY in config.py or env, or turn off Require API key in LM Studio Settings -> Local Server.")
+                else:
+                    logger.debug(f"LM Studio query failed or timed out: {e}")
 
         # Instant socket check for Ollama (port 11434)
         if self.backend in ("auto", "ollama") and is_port_open("127.0.0.1", 11434, timeout=0.2):
@@ -264,7 +291,7 @@ class ChatEngine:
                 req = urllib.request.Request(
                     url,
                     data=data_bytes,
-                    headers={"Content-Type": "application/json"},
+                    headers=self._lm_headers(),
                     method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:

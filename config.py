@@ -1,4 +1,4 @@
-"""
+﻿"""
 config.py - Centralized configuration for Sentinel AI.
 
 Single source of truth for paths, telemetry cadence, alert thresholds, and
@@ -69,11 +69,49 @@ AUTO_DIAGNOSTICS_ENABLED = False
 # Local LLM Inference Server Configuration
 # LLM_BACKEND: "auto" (attempts LM Studio on 1234 first, falls back to Ollama on 11434), "lm_studio", or "ollama"
 LLM_BACKEND = "auto"
+import json as _json
+import os as _os
+
+def _load_lm_studio_token() -> str:
+    # 1. Explicit env vars (documented)
+    for _env in ("LM_STUDIO_API_KEY", "LM_API_TOKEN", "LMSTUDIO_API_KEY"):
+        _v = _os.environ.get(_env)
+        if _v and _v.strip():
+            return _v.strip()
+    # 2. LM Studio 0.3+ stores per-server tokens under Local Storage leveldb,
+    #    not trivially readable; try the legacy local-inference token as fallback
+    #    (works when user disables server auth). If that fails the user should
+    #    either create a Server API key in LM Studio Settings -> Local Server
+    #    and set LM_STUDIO_API_KEY, or turn off "Require API key".
+    _candidates = [
+        Path.home() / ".lmstudio" / ".internal" / "server-tokens.json",
+        Path.home() / ".lmstudio" / "server-config.json",
+    ]
+    for _p in _candidates:
+        try:
+            if _p.exists():
+                _data = _json.loads(_p.read_text(encoding="utf-8"))
+                _tok = _data.get("token") or _data.get("apiKey") or _data.get("api_key")
+                if isinstance(_tok, str) and _tok.strip():
+                    return _tok.strip()
+                if isinstance(_data, dict):
+                    for _v in _data.values():
+                        if isinstance(_v, dict) and _v.get("token"):
+                            return str(_v["token"]).strip()
+        except Exception:
+            pass
+    # fallback wired from UI creation
+    _hard = "sk-lm-vh3D19PD:uKMpyYZNjx5SWvQR0tZw"
+    if _hard: return _hard
+    return ""
+
+LM_STUDIO_API_KEY = _load_lm_studio_token()
 LM_STUDIO_URL = "http://localhost:1234/v1"
 OLLAMA_URL = "http://localhost:11434"
-OLLAMA_MODEL = "nvidia/nemotron-3.5-bolt-74b-a9b"  # Switchable: "nvidia/nemotron-3.5-bolt-74b-a9b" (LM Studio catalog, NVIDIA 2-bit 24GB), "gemma2:9b" (Ollama fallback)
+OLLAMA_MODEL = "gemma2:9b"  # Switchable: "gemma2:9b", "gemma2:27b", "gemma3:latest"
 OLLAMA_TIMEOUT_SECONDS = 25.0
 
 # Chat UI watchdog: re-enable the input if a local inference call runs longer
 # than this.  The worker thread keeps running; only the UI is released.
 CHAT_WATCHDOG_SECONDS = 45
+

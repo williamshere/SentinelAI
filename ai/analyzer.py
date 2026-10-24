@@ -24,6 +24,7 @@ except ImportError:
 try:
     from config import (
         LLM_BACKEND,
+        LM_STUDIO_API_KEY,
         LM_STUDIO_URL,
         OLLAMA_MODEL,
         OLLAMA_TIMEOUT_SECONDS,
@@ -31,6 +32,7 @@ try:
     )
 except ImportError:
     LLM_BACKEND = "auto"
+    LM_STUDIO_API_KEY = ""
     LM_STUDIO_URL = "http://localhost:1234/v1"
     OLLAMA_URL = "http://localhost:11434"
     OLLAMA_MODEL = "gemma2:9b"
@@ -97,12 +99,14 @@ class HardwareAnalyzer:
     def __init__(
         self,
         backend: str = LLM_BACKEND,
+        api_key: str = LM_STUDIO_API_KEY,
         lm_studio_url: str = LM_STUDIO_URL,
         ollama_url: str = OLLAMA_URL,
         model: str = OLLAMA_MODEL,
         timeout_seconds: float = OLLAMA_TIMEOUT_SECONDS,
     ):
         self.backend = backend.lower()
+        self.api_key = (api_key or "").strip()
         self.lm_studio_url = lm_studio_url.rstrip("/")
         self.ollama_url = ollama_url.rstrip("/")
         self.model = model
@@ -128,7 +132,11 @@ class HardwareAnalyzer:
         if self.backend in ("auto", "lm_studio"):
             try:
                 url = f"{self.lm_studio_url}/chat/completions"
+                _headers = {"Content-Type": "application/json"}
+                if self.api_key:
+                    _headers["Authorization"] = f"Bearer {self.api_key}"
                 payload = {
+                    "model": self.model or "google/gemma-2-9b",
                     "messages": [
                         {"role": "system", "content": SYSTEM_DIAGNOSTIC_PROMPT},
                         {"role": "user", "content": prompt}
@@ -141,7 +149,7 @@ class HardwareAnalyzer:
                 req = urllib.request.Request(
                     url,
                     data=data_bytes,
-                    headers={"Content-Type": "application/json"},
+                    headers=_headers,
                     method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=min(6.0, self.timeout_seconds)) as response:
