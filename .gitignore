@@ -49,9 +49,18 @@ desktop.ini
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local binaries and shortcuts
+*.exe
+*.lnk
 .tox/
 
 # Secrets (never commit local overrides)
 .env
 *.env
 config.local.py
+
+# Temporary drive files
+.tmp.*
+*.tmp
+
