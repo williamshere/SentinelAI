@@ -1,7 +1,8 @@
 """
 build_exe.py - Build Automation Pipeline for Sentinel AI.
 Executes PyInstaller packaging, validates environment dependencies, generates
-native application icons, and prepares the standalone Windows distribution.
+native application icons, avoids Google Drive sync file locks, and prepares the
+standalone Windows distribution.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -38,7 +40,7 @@ def ensure_icon(assets_dir: Path) -> Path:
         for w, h in sizes:
             img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
-            
+
             # Outer shield
             m = w * 0.08
             sw = w - 2 * m
@@ -87,6 +89,13 @@ def check_dependencies():
     print(f"Python Executable: {sys.executable}")
     print(f"Python Version: {sys.version.split()[0]}")
 
+    # Check for Python 3.14 incompatibility
+    v = sys.version_info
+    if v.major == 3 and v.minor >= 14:
+        print(" [ERROR] Python 3.14+ detected! PySide6 Qt bindings crash on Python 3.14 on Windows.")
+        print("         Please use Python 3.11 - 3.13 (.venv313) to package Sentinel AI.")
+        sys.exit(1)
+
     try:
         import PyInstaller
         print(f" [OK] PyInstaller version: {PyInstaller.__version__}")
@@ -101,7 +110,7 @@ def check_dependencies():
         print(" [WARNING] PySide6 not installed in current environment!")
 
 
-def run_build(onefile: bool = False, clean: bool = True):
+def run_build(onefile: bool = False, clean: bool = True, custom_workpath: str | None = None):
     """Executes the PyInstaller build."""
     assets_dir = PROJECT_ROOT / "assets"
     ensure_icon(assets_dir)
@@ -112,6 +121,21 @@ def run_build(onefile: bool = False, clean: bool = True):
 
     print_step("Executing PyInstaller Compilation")
 
+    # Detect cloud sync folder (Google Drive, OneDrive, Dropbox)
+    root_str = str(PROJECT_ROOT).lower()
+    is_cloud_synced = any(cloud in root_str for cloud in ("google drive", "my drive", "onedrive", "dropbox"))
+    if is_cloud_synced:
+        print(" [!] Detected cloud-synchronized working directory (Google Drive/OneDrive).")
+        print("     Redirecting PyInstaller temporary workpath to local %TEMP% to prevent [WinError 32] file locks.")
+
+    if custom_workpath:
+        work_dir = Path(custom_workpath).resolve()
+    elif is_cloud_synced:
+        temp_base = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "Temp" / "SentinelAI_build_work"
+        work_dir = temp_base
+    else:
+        work_dir = None
+
     cmd = [
         sys.executable,
         "-m",
@@ -121,6 +145,11 @@ def run_build(onefile: bool = False, clean: bool = True):
     if clean:
         cmd.append("--clean")
     cmd.append("--noconfirm")
+
+    if work_dir:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        cmd.append(f"--workpath={work_dir}")
+        print(f" [*] Build Cache Workpath: {work_dir}")
 
     if onefile:
         print(" [*] Target Mode: Single Portable Executable (--onefile)")
@@ -142,7 +171,6 @@ def run_build(onefile: bool = False, clean: bool = True):
     dist_dir = PROJECT_ROOT / "dist" / "SentinelAI"
     if dist_dir.exists():
         print_step("Configuring Runtime Directory Layout")
-        # Ensure database and logs directories exist for immediate persistence
         (dist_dir / "database").mkdir(exist_ok=True)
         (dist_dir / "logs").mkdir(exist_ok=True)
         if assets_dir.exists():
@@ -177,10 +205,11 @@ def main():
     parser = argparse.ArgumentParser(description="Sentinel AI PyInstaller Packaging Pipeline")
     parser.add_argument("--onefile", action="store_true", help="Compile as a single standalone executable")
     parser.add_argument("--no-clean", action="store_true", help="Skip cleaning temporary build caches")
+    parser.add_argument("--workpath", type=str, default=None, help="Custom path for temporary build files to avoid cloud sync locks")
     args = parser.parse_args()
 
     check_dependencies()
-    run_build(onefile=args.onefile, clean=not args.no_clean)
+    run_build(onefile=args.onefile, clean=not args.no_clean, custom_workpath=args.workpath)
 
 
 if __name__ == "__main__":

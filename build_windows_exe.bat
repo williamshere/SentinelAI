@@ -10,8 +10,11 @@ echo.
 :: 1. Navigate to Project Root
 cd /d "%~dp0"
 
-:: 2. Check for Virtual Environment
-if exist ".venv\Scripts\activate.bat" (
+:: 2. Check for Virtual Environment (Prioritize .venv313)
+if exist ".venv313\Scripts\activate.bat" (
+    echo [*] Activating local virtual environment (.venv313)...
+    call .venv313\Scripts\activate.bat
+) else if exist ".venv\Scripts\activate.bat" (
     echo [*] Activating local virtual environment (.venv)...
     call .venv\Scripts\activate.bat
 ) else if exist "pyside6_env\Scripts\activate.bat" (
@@ -25,7 +28,7 @@ if exist ".venv\Scripts\activate.bat" (
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Python not found in PATH!
-    echo Please install Python 3.11+ and ensure 'Add Python to PATH' is checked.
+    echo Please install Python 3.11 - 3.13 and ensure 'Add Python to PATH' is checked.
     pause
     exit /b 1
 )

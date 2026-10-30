@@ -15,6 +15,18 @@ except ImportError:
     RETENTION_DAYS = 7
 
 
+
+# Whitelist of telemetry columns the History view may chart. Metric names are
+# validated against this map before reaching SQL, so UI input can never inject
+# a column name.
+HISTORY_METRIC_COLUMNS = {
+    "cpu_usage": "CPU Usage (%)",
+    "cpu_temp": "CPU Temperature (°C)",
+    "ram_percent": "RAM Usage (%)",
+    "disk_percent": "Disk Usage (%)",
+    "gpu_usage": "GPU Usage (%)",
+    "gpu_temp": "GPU Temperature (°C)",
+}
 class DatabaseManager:
     def __init__(self, db_path: Path = DATABASE_PATH):
         self.db_path = Path(db_path)
@@ -452,3 +464,90 @@ class DatabaseManager:
                 LIMIT ?;
             """, (limit,))
             return [dict(row) for row in cursor.fetchall()]
+    def _history_column(self, metric: str) -> str:
+        """Return the SQL column for a History metric or fail closed."""
+        if metric not in HISTORY_METRIC_COLUMNS:
+            raise ValueError(f"Unknown history metric: {metric!r}")
+        return metric
+
+    def get_history_series(self, hours: float, metric: str, max_points: int = 240) -> list[tuple[str, float]]:
+        """Return [(timestamp, value)] for one metric over the trailing window.
+
+        Downsampled to at most max_points equal-width time buckets (bucket
+        averages) so a 7-day range stays cheap to render.
+        """
+        column = self._history_column(metric)
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=float(hours))
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT timestamp, {column} FROM telemetry_snapshots "
+                "WHERE timestamp >= ? AND timestamp <= ? AND "
+                f"{column} IS NOT NULL ORDER BY timestamp ASC;",
+                (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            rows = [(r["timestamp"], float(r[column])) for r in cursor.fetchall()]
+        if len(rows) <= max_points:
+            return rows
+        span = (end - start).total_seconds()
+        if span <= 0:
+            return rows[-max_points:]
+        bucket_seconds = span / max_points
+        buckets: dict[int, list[float]] = {}
+        for ts, value in rows:
+            try:
+                t = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            idx = min(int((t - start).total_seconds() // bucket_seconds), max_points - 1)
+            buckets.setdefault(idx, []).append(value)
+        series = []
+        for idx in sorted(buckets):
+            values = buckets[idx]
+            bucket_start = start + timedelta(seconds=idx * bucket_seconds)
+            series.append((bucket_start.strftime("%Y-%m-%d %H:%M:%S"), sum(values) / len(values)))
+        return series
+
+    def get_history_stats(self, hours: float, metric: str) -> dict:
+        """Return {min, avg, max, count} for one metric over the trailing window."""
+        column = self._history_column(metric)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=float(hours))
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT MIN({column}) AS mn, AVG({column}) AS av, MAX({column}) AS mx, "
+                f"COUNT({column}) AS n FROM telemetry_snapshots WHERE timestamp >= ?;",
+                (cutoff.strftime("%Y-%m-%d %H:%M:%S"),),
+            )
+            row = cursor.fetchone()
+        count = int(row["n"] or 0)
+        if count == 0:
+            return {"min": None, "avg": None, "max": None, "count": 0}
+        return {"min": float(row["mn"]), "avg": float(row["av"]), "max": float(row["mx"]), "count": count}
+
+    def get_snapshots_in_range(self, start: datetime, end: datetime) -> list[dict]:
+        """Return full snapshot rows between start and end (for CSV export)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT timestamp, cpu_usage, cpu_freq, cpu_temp, cpu_power_watts, "
+                "ram_percent, ram_used_gb, disk_percent, gpu_usage, gpu_temp, "
+                "gpu_power_watts, gpu_vram_used_gb FROM telemetry_snapshots "
+                "WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC;",
+                (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_gaming_sessions_in_range(self, start: datetime, end: datetime) -> list[dict]:
+        """Return gaming sessions overlapping [start, end] (History markers)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, game_title, process_name, start_time, end_time, "
+                "duration_seconds FROM gaming_sessions "
+                "WHERE start_time <= ? AND (end_time IS NULL OR end_time >= ?) "
+                "ORDER BY start_time ASC;",
+                (end.strftime("%Y-%m-%d %H:%M:%S"), start.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            return [dict(r) for r in cursor.fetchall()]

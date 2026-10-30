@@ -2320,7 +2320,14 @@ class SentinelDashboard(QMainWindow):
         # Live update settings view indicators if active
         if hasattr(self, "settings_cpu_driver_val") and self.settings_cpu_driver_val:
             temp_avail = data.get("cpu", {}).get("temp_available", False)
-            self.settings_cpu_driver_val.setText("Active (LibreHardwareMonitor)" if temp_avail else "Elevation Required (Run as Admin)")
+            is_estimated = data.get("cpu", {}).get("is_estimated_temp", False)
+            if temp_avail and not is_estimated:
+                driver_status = "Active (LibreHardwareMonitor)"
+            elif is_estimated:
+                driver_status = "Calibrated Thermal Model (Run as Admin for WMI)"
+            else:
+                driver_status = "Elevation Required (Run as Admin)"
+            self.settings_cpu_driver_val.setText(driver_status)
             self.settings_cpu_driver_val.setStyleSheet(
                 "font-size: 12px; color: #34d399; font-weight: 600; background-color: rgba(30, 41, 59, 200); border: 1px solid #334155; border-radius: 4px; padding: 2px 8px;"
                 if temp_avail else
@@ -2353,18 +2360,21 @@ class SentinelDashboard(QMainWindow):
         cpu_freq = cpu.get("frequency", 0.0)
         cpu_temp = cpu.get("temperature", 0.0)
         cpu_power = cpu.get("power_watts", 0.0)
-        temp_avail = cpu.get("temp_available", cpu_temp > 0.0)
+        temp_avail = cpu.get("temp_available", False)
         is_elevated = cpu.get("is_elevated", True)
+        is_estimated = cpu.get("is_estimated_temp", cpu.get("temp_source") == "estimated_thermal_model")
 
         # Dynamic Sensor Warning Banner visibility
         if hasattr(self, "sensor_warning_banner") and self.sensor_warning_banner:
-            if not temp_avail and not is_elevated:
+            if is_estimated or not is_elevated:
                 self.sensor_warning_banner.setVisible(True)
             else:
                 self.sensor_warning_banner.setVisible(False)
 
-        if temp_avail:
+        if temp_avail and not is_estimated:
             temp_str = f" • {cpu_temp:.0f}°C"
+        elif is_estimated:
+            temp_str = f" • ~{cpu_temp:.0f}°C (Est)"
         elif not is_elevated:
             temp_str = " • Temp: Elevate"
         else:
