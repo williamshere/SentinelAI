@@ -49,6 +49,7 @@ THRESHOLDS = {
     "gpu_temp_high": 75.0,
     "gpu_temp_critical": 85.0,
     "gpu_usage_high": 90.0,
+    "network_high": 104857600.0,
 }
 
 # Time-based alert debounce (seconds).  On top of the hysteresis in

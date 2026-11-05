@@ -46,6 +46,7 @@ CORE_PROJECT_MANIFEST = {
         "sensors/__init__.py",
         "sensors/cpu.py",
         "sensors/disk.py",
+        "sensors/network.py",
         "sensors/gpu.py",
         "sensors/ram.py",
         "sensors/storage_health.py",
