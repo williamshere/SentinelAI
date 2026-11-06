@@ -7,6 +7,7 @@ SentinelAI is configured for low-impact monitoring: telemetry refreshes every tw
 ## Features
 
 - **Live telemetry** — CPU usage/frequency/temperature/power, RAM, disk, GPU usage/temperature/VRAM/power/clocks, and NVMe SMART health, refreshed every 2 s.
+- **Process monitor** — live per-process CPU and resident memory usage, sorted by CPU and refreshed every 5 s.
 - **Threshold alerts** — edge-triggered warnings/criticals with hysteresis and a 60-second debounce, delivered as desktop toasts and persisted to SQLite. Alerting keeps running when the app is minimized to the system tray.
 - **Weighted PC Health Score** — 40% thermals, 30% RAM/disk, 30% thermal headroom, recomputed every tick.
 - **Predictive maintenance** — AIO liquid-cooling efficiency (θ in °C/W), GPU hotspot/die-contact spread, and SSD lifespan projection from SMART wear.
@@ -42,6 +43,7 @@ To build a standalone `.exe`, see `docs/PACKAGING_GUIDE.md` (or run `python buil
 | **Alerts** | Historical + active threshold violations, loaded from SQLite |
 | **Ask Sentinel** | Chat with the local model; telemetry, predictive data, recent sessions, and alerts are injected as context automatically |
 | **Threats** | Active threat & incident feed |
+| **Processes** | Per-process CPU and resident memory usage |
 | **Settings** | Hardware architecture, AI engine status, polling intervals, alert thresholds, auto-start toggle, driver audit |
 
 ## Configuration (`config.py`)
