@@ -189,3 +189,15 @@ class TestSensors(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_get_network_info():
+    from sensors.network import get_network_info
+    info = get_network_info()
+    assert isinstance(info, dict)
+    assert "available" in info
+    if info["available"]:
+        assert "bytes_sent" in info
+        assert "bytes_recv" in info
+        assert "upload_speed_bps" in info
+        assert "download_speed_bps" in info

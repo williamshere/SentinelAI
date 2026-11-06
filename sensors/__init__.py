@@ -5,6 +5,7 @@ from .cpu import get_cpu_info, is_admin
 from .gpu import get_gpu_info
 from .ram import get_ram_info
 from .disk import get_disk_info
+from .network import get_network_info
 
 try:
     from .storage_health import get_storage_health
@@ -30,6 +31,7 @@ __all__ = [
     "get_gpu_info",
     "get_ram_info",
     "get_disk_info",
+    "get_network_info",
     "get_storage_health",
     "is_admin",
 ]

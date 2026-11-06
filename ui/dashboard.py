@@ -167,23 +167,23 @@ def make_list_item(text: str, severity: str = "info") -> QListWidgetItem:
 
 
 class MetricCard(QFrame):
-    def __init__(self, title: str, icon: str, with_progress: bool = True):
+    def __init__(self, title: str, icon: str, with_progress: bool = True, with_secondary_progress: bool = False):
         super().__init__()
         self.setObjectName("metricCard")
         self.setStyleSheet("""
             #metricCard {
-                background-color: #101828;
-                border: 1px solid #243244;
+                background-color: #1c1c1e;
+                border: 1px solid #2c2c2e;
                 border-radius: 12px;
                 padding: 12px;
             }
-            QLabel { color: #eaf1ff; }
+            QLabel { color: #f2f2f7; }
         """)
         self.layout = QVBoxLayout(self)
         self.title_label = QLabel(f"{icon} {title}")
-        self.title_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #eaf1ff;")
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #f2f2f7;")
         self.value_label = QLabel("Loading...")
-        self.value_label.setStyleSheet("font-size: 13px; color: #7dd3fc; white-space: pre;")
+        self.value_label.setStyleSheet("font-size: 13px; color: #8e8e93; white-space: pre;")
         self.layout.addWidget(self.title_label)
         self.layout.addWidget(self.value_label)
 
@@ -195,8 +195,8 @@ class MetricCard(QFrame):
             self.progress.setTextVisible(True)
             self.progress.setStyleSheet("""
                 QProgressBar {
-                    background-color: #071120;
-                    color: #eaf1ff;
+                    background-color: #0c0c0c;
+                    color: #f2f2f7;
                     border: none;
                     height: 14px;
                     border-radius: 7px;
@@ -204,18 +204,49 @@ class MetricCard(QFrame):
                     font-size: 11px;
                 }
                 QProgressBar::chunk {
-                    background-color: #06b6d4;
+                    background-color: #0a84ff;
                     border-radius: 7px;
                 }
             """)
             self.layout.addWidget(self.progress)
 
-    def set_value(self, text: str, percent: float | None = None):
+        self.secondary_progress = None
+        if with_secondary_progress:
+            self.secondary_progress = QProgressBar(self)
+            self.secondary_progress.setRange(0, 100)
+            self.secondary_progress.setValue(0)
+            self.secondary_progress.setTextVisible(True)
+            self.secondary_progress.setStyleSheet("""
+                QProgressBar {
+                    background-color: #0c0c0c;
+                    color: #f2f2f7;
+                    border: none;
+                    height: 14px;
+                    border-radius: 7px;
+                    text-align: center;
+                    font-size: 11px;
+                }
+                QProgressBar::chunk {
+                    background-color: #ff9f0a;
+                    border-radius: 7px;
+                }
+            """)
+            self.layout.addWidget(self.secondary_progress)
+
+    def set_value(self, text: str, percent: float | None = None, secondary_percent: float | None = None):
         self.value_label.setText(text)
         if self.progress is not None and percent is not None:
             try:
                 val = max(0, min(100, int(percent)))
                 self.progress.setValue(val)
+                self.progress.setFormat(f"Usage: {val}%")
+            except Exception:
+                pass
+        if self.secondary_progress is not None and secondary_percent is not None:
+            try:
+                val = max(0, min(100, int(secondary_percent)))
+                self.secondary_progress.setValue(val)
+                self.secondary_progress.setFormat(f"Temp: {val}°C")
             except Exception:
                 pass
 
@@ -239,12 +270,18 @@ class TelemetryWorker(QThread):
             ram = get_ram_info()
             disk = get_disk_info()
             gpu = get_gpu_info()
+            try:
+                from sensors.network import get_network_info
+                net = get_network_info()
+            except ImportError:
+                net = {"available": False}
 
             payload = {
                 "cpu": cpu,
                 "ram": ram,
                 "disk": disk,
                 "gpu": gpu,
+                "network": net,
                 "timestamp": datetime.now(),
             }
             # Stream live data to dashboard
@@ -539,15 +576,17 @@ class SentinelDashboard(QMainWindow):
         metrics_grid = QGridLayout()
         metrics_grid.setSpacing(16)
         self.cards = {
-            "CPU": MetricCard("CPU", "🧠", with_progress=True),
+            "CPU": MetricCard("CPU", "🧠", with_progress=True, with_secondary_progress=True),
             "RAM": MetricCard("RAM", "🗄️", with_progress=True),
             "Disk": MetricCard("Disk", "💾", with_progress=True),
-            "GPU": MetricCard("GPU", "🎮", with_progress=True),
+            "GPU": MetricCard("GPU", "🎮", with_progress=True, with_secondary_progress=True),
+            "Network": MetricCard("Network", "🌐", with_progress=False)
         }
         metrics_grid.addWidget(self.cards["CPU"], 0, 0)
         metrics_grid.addWidget(self.cards["RAM"], 0, 1)
         metrics_grid.addWidget(self.cards["Disk"], 0, 2)
         metrics_grid.addWidget(self.cards["GPU"], 0, 3)
+        metrics_grid.addWidget(self.cards["Network"], 0, 4)
         content_layout.addLayout(metrics_grid)
 
         # Quick Utilities Action Toolbar
@@ -1790,6 +1829,40 @@ class SentinelDashboard(QMainWindow):
         add_row(grid_sys, 3, "Host Subsystems:", "Intel i7-12700 • RTX 5070 • Z790 AX", val_color="#e2e8f0")
         grid_top.addWidget(card_sys, 0, 0)
 
+        # --- Refresh Rate Setting ---
+        card_refresh, grid_refresh = create_card("card_refresh", "Performance Tunables", "⏱️")
+
+        self.combo_refresh = QComboBox()
+        self.combo_refresh.addItems(["Fast (1s)", "Standard (2s)", "Relaxed (5s)", "Background (10s)"])
+        self.combo_refresh.setCurrentText("Standard (2s)")
+        self.combo_refresh.setStyleSheet("""
+            QComboBox { background-color: #1e293b; color: #cbd5e1; border: 1px solid #334155; border-radius: 4px; padding: 4px; }
+            QComboBox::drop-down { border: none; }
+        """)
+
+        def on_refresh_changed(text):
+            try:
+                import config
+                ms = 2000
+                if "1s" in text: ms = 1000
+                elif "5s" in text: ms = 5000
+                elif "10s" in text: ms = 10000
+                config.UI_REFRESH_INTERVAL_MS = ms
+                if hasattr(self, "worker"):
+                    self.worker.poll_interval = ms / 1000.0
+                self.send_toast_notification("Settings Saved", f"Refresh interval set to {text}.", QSystemTrayIcon.MessageIcon.Information)
+            except Exception as e:
+                pass
+
+        self.combo_refresh.currentTextChanged.connect(on_refresh_changed)
+
+        lbl_refresh = QLabel("UI Polling Interval:")
+        lbl_refresh.setStyleSheet("font-size: 13px; color: #94a3b8; font-weight: 500; border: none; background: transparent;")
+        grid_refresh.addWidget(lbl_refresh, 0, 0)
+        grid_refresh.addWidget(self.combo_refresh, 0, 1)
+
+        layout.addWidget(card_refresh)
+
         # 2. Local AI Engine & Diagnostics Card
         card_ai, grid_ai = create_card("cardAiEngine", "Local AI Engine & Triage", "🧠")
         add_row(grid_ai, 0, "Inference Engine:", "Ollama (gemma2:9b) on RTX 5070", val_color="#38bdf8")
@@ -2350,10 +2423,11 @@ class SentinelDashboard(QMainWindow):
 
         
 
-        cpu = data["cpu"]
-        ram = data["ram"]
-        disk = data["disk"]
-        gpu = data["gpu"]
+        cpu = data.get("cpu", {})
+        ram = data.get("ram", {})
+        disk = data.get("disk", {})
+        gpu = data.get("gpu", {})
+        net = data.get("network", {})
 
         # CPU Card (Updated with Temperature and Power Consumption)
         cpu_usage = cpu.get("usage", 0.0)
@@ -2384,6 +2458,7 @@ class SentinelDashboard(QMainWindow):
         self.cards["CPU"].set_value(
             f"Usage: {cpu_usage:.1f}%\nFreq: {cpu_freq:.0f} MHz{temp_str}{power_str}",
             cpu_usage,
+            cpu_temp if temp_avail else None
         )
 
         # RAM Card
@@ -2417,9 +2492,19 @@ class SentinelDashboard(QMainWindow):
             self.cards["GPU"].set_value(
                 f"{gpu.get('name')}\nUsage: {gpu_usage:.0f}% • Temp: {gpu_temp:.0f}°C\nVRAM: {vram_used_gb:.1f}/{vram_total_gb:.1f} GB • {power:.0f}W",
                 gpu_usage,
+                gpu_temp
             )
         else:
             self.cards["GPU"].set_value(f"{gpu.get('name', 'Unavailable')}", 0.0)
+        # Network Card
+        net_avail = net.get("available", False)
+        if net_avail:
+            up_mbps = net.get("upload_speed_bps", 0) * 8 / 1_000_000
+            down_mbps = net.get("download_speed_bps", 0) * 8 / 1_000_000
+            self.cards["Network"].set_value(f"Up: {up_mbps:.1f} Mbps\nDown: {down_mbps:.1f} Mbps")
+        else:
+            self.cards["Network"].set_value("N/A")
+
 
         # Live Chart Feed
         self.chart.add_snapshot(cpu_usage, ram_pct, gpu_usage)
