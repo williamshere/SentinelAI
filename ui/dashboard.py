@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QInputDialog,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -38,6 +39,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QStackedWidget,
     QSystemTrayIcon,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -275,6 +278,11 @@ class TelemetryWorker(QThread):
                 net = get_network_info()
             except ImportError:
                 net = {"available": False}
+            try:
+                from sensors.processes import get_process_info
+                processes = get_process_info()
+            except ImportError:
+                processes = {"available": False, "processes": []}
 
             payload = {
                 "cpu": cpu,
@@ -282,6 +290,7 @@ class TelemetryWorker(QThread):
                 "disk": disk,
                 "gpu": gpu,
                 "network": net,
+                "processes": processes,
                 "timestamp": datetime.now(),
             }
             # Stream live data to dashboard
@@ -381,6 +390,7 @@ class SentinelDashboard(QMainWindow):
         self.chat_view = self._create_chat_view()
         self.settings_view = self._create_settings_view()
         self.history_view = self._create_history_view()
+        self.processes_view = self._create_processes_view()
 
         self.stack.addWidget(self.overview_view)   # Index 0
         self.stack.addWidget(self.threats_view)    # Index 1
@@ -389,6 +399,7 @@ class SentinelDashboard(QMainWindow):
         self.stack.addWidget(self.chat_view)       # Index 4
         self.stack.addWidget(self.settings_view)   # Index 5
         self.stack.addWidget(self.history_view)    # Index 6
+        self.stack.addWidget(self.processes_view)  # Index 7
 
         main_layout.addWidget(self.stack, 1)
 
@@ -468,6 +479,7 @@ class SentinelDashboard(QMainWindow):
             ("💬  Ask Sentinel", 4),
             ("⚙️  Settings", 5),
             ("📈  History", 6),
+            ("⚙️  Processes", 7),
         ]
 
         self.nav_buttons = []
@@ -499,9 +511,90 @@ class SentinelDashboard(QMainWindow):
             self.stack.setCurrentIndex(index)
             if index == 6:
                 self._refresh_history()
+            elif index == 7:
+                self._refresh_process_table(self.latest_metrics.get("processes", {}))
             button = self.nav_button_group.button(index)
             if button and not button.isChecked():
                 button.setChecked(True)
+
+    def _create_processes_view(self) -> QWidget:
+        """View 7: Live per-process CPU and memory usage."""
+        view = QWidget()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(24, 20, 24, 24)
+        layout.setSpacing(12)
+
+        title = QLabel("Process Monitor")
+        title.setStyleSheet("font-size: 26px; font-weight: bold; color: #f8fafc;")
+        layout.addWidget(title)
+
+        description = QLabel(
+            "Top processes by CPU usage. CPU is normalized across logical processors; "
+            "memory shows resident RAM. Values refresh every 5 seconds."
+        )
+        description.setWordWrap(True)
+        description.setStyleSheet("font-size: 13px; color: #8ba0bd;")
+        layout.addWidget(description)
+
+        self.process_status = QLabel("Waiting for process data…")
+        self.process_status.setStyleSheet("font-size: 12px; color: #94a3b8;")
+        layout.addWidget(self.process_status)
+
+        self.process_table = QTableWidget(0, 5)
+        self.process_table.setHorizontalHeaderLabels(["Process", "PID", "CPU", "Memory", "RAM %"])
+        self.process_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.process_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.process_table.setAlternatingRowColors(True)
+        self.process_table.verticalHeader().setVisible(False)
+        self.process_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, 5):
+            self.process_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.process_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #101828;
+                alternate-background-color: #142033;
+                color: #eaf1ff;
+                gridline-color: #243244;
+                border: 1px solid #243244;
+                border-radius: 8px;
+            }
+            QHeaderView::section {
+                background-color: #0f172a;
+                color: #94a3b8;
+                padding: 8px;
+                border: none;
+                border-bottom: 1px solid #243244;
+                font-weight: 600;
+            }
+        """)
+        layout.addWidget(self.process_table, 1)
+        return view
+
+    def _refresh_process_table(self, process_data: dict):
+        """Render the latest process snapshot when the process view is active."""
+        if not hasattr(self, "process_table"):
+            return
+
+        processes = process_data.get("processes", [])
+        self.process_table.setRowCount(len(processes))
+        if not process_data.get("available", False):
+            self.process_status.setText("Process telemetry unavailable (psutil is required).")
+            return
+
+        self.process_status.setText(f"Showing {len(processes)} processes; sorted by CPU usage.")
+        for row, process in enumerate(processes):
+            values = (
+                process.get("name", "Unknown"),
+                str(process.get("pid", "")),
+                f'{process.get("cpu_percent", 0.0):.1f}%',
+                f'{process.get("memory_bytes", 0) / (1024 ** 2):.1f} MB',
+                f'{process.get("memory_percent", 0.0):.2f}%',
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column > 0:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.process_table.setItem(row, column, item)
 
     def _create_overview_view(self) -> QWidget:
         """View 0: Primary Overview Dashboard with live metrics, charts, and feeds."""
@@ -2389,6 +2482,9 @@ class SentinelDashboard(QMainWindow):
         if not window_visible:
             # Skip GUI drawing overhead while hidden; monitoring continues above.
             return
+
+        if self.stack.currentIndex() == 7:
+            self._refresh_process_table(data.get("processes", {}))
 
         # Live update settings view indicators if active
         if hasattr(self, "settings_cpu_driver_val") and self.settings_cpu_driver_val:
