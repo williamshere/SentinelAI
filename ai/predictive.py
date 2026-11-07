@@ -1,11 +1,4 @@
-"""
-ai/predictive.py - Predictive Hardware Wear and Thermal Degradation Engine.
-Calibrated for:
-- Intel Core i7-12700 CPU on Gigabyte Z790 Aorus Elite AX
-- Cooler Master MasterLiquid 360 AIO Liquid Cooler
-- G8 Panoramic Dual-Chamber High-Airflow Chassis
-- NVIDIA GeForce RTX 5070 GPU (12GB GDDR7)
-"""
+"""Predictive thermal and storage estimates using configurable reference values."""
 from __future__ import annotations
 
 import logging
@@ -14,16 +7,19 @@ from typing import Any
 
 logger = logging.getLogger("sentinel.predictive")
 
-# Baseline thermal resistance thresholds for 360mm AIO on LGA 1700
-# Healthy liquid cooling exhibits theta between 0.18 and 0.24 °C/W under sustained load
-AIO_360_NOMINAL_THETA = 0.21       # °C/Watt (Cooler Master MasterLiquid 360 baseline)
-AIO_360_WARNING_THETA = 0.29       # Significant dust accumulation or paste degradation
-AIO_360_CRITICAL_THETA = 0.38      # Pump failure, air pocket, or severe paste dry-out
+try:
+    from config import SSD_DAILY_WRITE_GB_ESTIMATE, SSD_RATED_TBW_ESTIMATE
+except ImportError:
+    SSD_DAILY_WRITE_GB_ESTIMATE = 30.0
+    SSD_RATED_TBW_ESTIMATE = 600.0
 
-# GPU Hotspot delta thresholds (°C) for RTX 5070
-GPU_HOTSPOT_NOMINAL_DELTA = 13.0   # Normal die-to-junction spread
-GPU_HOTSPOT_WARNING_DELTA = 19.0   # Early thermal paste pump-out
-GPU_HOTSPOT_CRITICAL_DELTA = 24.0  # Severe paste migration / mounting pressure loss
+# Generic reference thresholds; actual limits vary by component and cooler.
+AIO_360_NOMINAL_THETA = 0.21
+AIO_360_WARNING_THETA = 0.29
+AIO_360_CRITICAL_THETA = 0.38
+GPU_HOTSPOT_NOMINAL_DELTA = 13.0
+GPU_HOTSPOT_WARNING_DELTA = 19.0
+GPU_HOTSPOT_CRITICAL_DELTA = 24.0
 
 
 @dataclass
@@ -33,8 +29,8 @@ class PredictiveAssessment:
     cpu_health_status: str
     gpu_hotspot_delta: float
     gpu_contact_status: str
-    ssd_health_percent: float
-    ssd_estimated_years_remaining: float
+    ssd_health_percent: float | None
+    ssd_estimated_years_remaining: float | None
     ssd_wear_status: str
     maintenance_recommendations: list[str]
     predictive_advisory: str
@@ -116,31 +112,31 @@ class PredictiveEngine:
 
     def project_ssd_lifespan(
         self,
-        wear_percent: float,
-        tbw_written: float = 14.5,
-        rated_tbw: float = 600.0,
-        daily_write_gb: float = 30.0
-    ) -> tuple[float, str]:
+        wear_percent: float | None,
+        rated_tbw: float = SSD_RATED_TBW_ESTIMATE,
+        daily_write_gb: float = SSD_DAILY_WRITE_GB_ESTIMATE
+    ) -> tuple[float | None, str]:
         """
-        Estimates remaining useful life (in years) based on NAND flash wear
-        and average daily write rates.
+        Roughly estimates years remaining from wear percent and generic TBW/write
+        assumptions. Set rated_tbw and daily_write_gb for the specific drive/use.
         """
-        wear = max(0.0, min(100.0, float(wear_percent or 0.0)))
+        if wear_percent is None or rated_tbw <= 0 or daily_write_gb <= 0:
+            return None, "Unavailable (SMART wear data required)"
+
+        wear = max(0.0, min(100.0, float(wear_percent)))
         remaining_tbw = max(0.0, rated_tbw * (1.0 - (wear / 100.0)))
-        
-        # Calculate daily consumption in TB
-        daily_tb = max(0.005, daily_write_gb / 1024.0)
+        daily_tb = daily_write_gb / 1024.0
         days_left = remaining_tbw / daily_tb
         years_left = round(days_left / 365.25, 1)
 
         if wear < 20.0:
-            status = "Pristine NAND Flash Endurance"
+            status = "Low wear (rough estimate)"
         elif wear < 50.0:
-            status = "Healthy Flash Lifespan"
+            status = "Moderate wear (rough estimate)"
         elif wear < 80.0:
-            status = "Normal Aging"
+            status = "Aging (rough estimate)"
         else:
-            status = "High Wear - Plan Backup & Replacement"
+            status = "High wear (rough estimate) - Plan backup and replacement"
 
         return years_left, status
 
@@ -169,49 +165,49 @@ class PredictiveEngine:
         # 3. Storage Lifespan Projection
         sh = storage_health or {}
 
-        def _storage_num(key: str, default: float) -> float:
-            # Explicit None check: a legitimate 0.0 reading (brand-new drive)
-            # must not be clobbered by the default.
-            value = sh.get(key, default)
-            return default if value is None else float(value)
-
-        wear_pct = _storage_num("wear_percent", 2.0)
-        ssd_health = _storage_num("health_percent", 98.0)
-        tbw_val = _storage_num("tbw_terabytes", 12.0)
-        ssd_years, ssd_status = self.project_ssd_lifespan(wear_pct, tbw_written=tbw_val)
+        storage_available = bool(sh.get("available", False))
+        wear_pct = sh.get("wear_percent") if storage_available else None
+        ssd_health = sh.get("health_percent") if storage_available else None
+        ssd_years, ssd_status = self.project_ssd_lifespan(wear_pct)
 
         # 4. Generate Targeted Maintenance Recommendations
         recs = []
         if cooling_eff < 75.0:
-            recs.append("Clean Cooler Master 360 radiator mesh filter in G8 Panoramic case to restore airflow.")
-            recs.append("Verify AIO pump tachometer is operating at full speed (>2200 RPM) via motherboard header.")
+            recs.append("Cooling efficiency is below the reference range. Check the cooler, airflow, and manufacturer guidance.")
         else:
-            recs.append("Cooler Master Liquid 360 AIO operating with excellent thermal transfer efficiency.")
+            recs.append("Thermal resistance is within the generic cooling reference range; actual limits depend on the cooler.")
 
         if gpu_hotspot_delta > GPU_HOTSPOT_WARNING_DELTA:
-            recs.append("Monitor RTX 5070 junction delta; consider repasting GPU core if delta exceeds 24°C under full load.")
+            recs.append("GPU hotspot spread is elevated; compare against the GPU manufacturer's limits and monitor under load.")
 
-        if wear_pct > 70.0:
-            recs.append("Primary NVMe drive wear is elevated. Verify SMART spare block reserves.")
+        if wear_pct is None:
+            recs.append("Storage SMART wear data is unavailable; lifespan cannot be estimated.")
+        elif wear_pct > 70.0:
+            recs.append("Storage wear is elevated. Verify the drive's SMART reserve data and maintain a current backup.")
         else:
-            recs.append(f"Storage endurance is healthy with an estimated {ssd_years} years of operational life remaining.")
+            recs.append(
+                f"Rough storage lifespan estimate: {ssd_years} years, assuming "
+                f"{SSD_RATED_TBW_ESTIMATE:g} TBW endurance and {SSD_DAILY_WRITE_GB_ESTIMATE:g} GB written daily."
+            )
 
         # 5. Formulate Diagnostic Advisory
-        if cooling_eff >= 90.0 and gpu_hotspot_delta <= GPU_HOTSPOT_NOMINAL_DELTA + 3.0:
+        if cooling_eff >= 90.0 and gpu_hotspot_delta <= GPU_HOTSPOT_NOMINAL_DELTA + 3.0 and wear_pct is not None:
             advisory = (
-                f"Cooling architecture is nominal. The Cooler Master Liquid 360 AIO maintains "
-                f"{cooling_eff}% cooling efficiency (θ = {theta:.2f}°C/W). GPU core contact is uniform. "
-                f"No thermal or storage maintenance required."
+                f"Thermal readings are within generic reference ranges ({cooling_eff}% reference efficiency, "
+                f"θ = {theta:.2f}°C/W). GPU hotspot spread is within the reference range. "
+                f"Storage lifespan estimate is rough and uses generic endurance/write assumptions."
             )
         elif cooling_eff < 75.0:
             advisory = (
-                f"Elevated thermal resistance detected (θ = {theta:.2f}°C/W, Efficiency: {cooling_eff}%). "
-                f"Inspect G8 Panoramic intake vents and 360mm top exhaust radiator for dust buildup."
+                f"Elevated thermal resistance detected (θ = {theta:.2f}°C/W, {cooling_eff}% of the generic reference). "
+                f"Check cooling and airflow against the installed hardware's manufacturer guidance."
             )
+        elif wear_pct is None:
+            advisory = "Storage SMART wear data is unavailable; no storage lifespan estimate can be made."
         else:
             advisory = (
-                f"System operating within normal wear tolerances. Thermal transfer efficiency is at {cooling_eff}%. "
-                f"NVMe flash endurance projected at {ssd_years} years."
+                f"Thermal readings are at {cooling_eff}% of the generic cooling reference. "
+                f"Rough storage lifespan estimate: {ssd_years} years using configurable generic assumptions."
             )
 
         return PredictiveAssessment(

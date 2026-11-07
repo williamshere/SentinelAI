@@ -74,15 +74,23 @@ class TestPredictiveEngine(unittest.TestCase):
         self.assertEqual(status_crit, "Severe Contact Pressure Loss")
 
     def test_ssd_lifespan_projection(self):
-        # 5% wear on 600 TBW rated drive -> remaining 570 TBW
         years, status = self.engine.project_ssd_lifespan(wear_percent=5.0, rated_tbw=600.0, daily_write_gb=30.0)
         self.assertGreater(years, 40.0)
-        self.assertEqual(status, "Pristine NAND Flash Endurance")
+        self.assertIn("rough estimate", status)
 
         # 85% wear -> high wear advisory
         years_worn, status_worn = self.engine.project_ssd_lifespan(wear_percent=85.0, rated_tbw=600.0, daily_write_gb=30.0)
         self.assertLess(years_worn, 10.0)
-        self.assertIn("High Wear", status_worn)
+        self.assertIn("High wear", status_worn)
+
+    def test_ssd_lifespan_uses_write_rate_and_requires_measured_wear(self):
+        slow_writes, _ = self.engine.project_ssd_lifespan(20.0, rated_tbw=600.0, daily_write_gb=30.0)
+        heavy_writes, _ = self.engine.project_ssd_lifespan(20.0, rated_tbw=600.0, daily_write_gb=90.0)
+        self.assertGreater(slow_writes, heavy_writes)
+
+        years, status = self.engine.project_ssd_lifespan(None)
+        self.assertIsNone(years)
+        self.assertIn("SMART wear data required", status)
 
     def test_full_system_synthesis(self):
         metrics = {
@@ -93,13 +101,24 @@ class TestPredictiveEngine(unittest.TestCase):
             "model": "Samsung 990 Pro 1TB",
             "wear_percent": 3.0,
             "health_percent": 97.0,
-            "tbw_terabytes": 15.2
+            "tbw_terabytes": 15.2,
+            "available": True,
         }
         assessment = self.engine.evaluate_system(metrics, storage)
         self.assertIsInstance(assessment, PredictiveAssessment)
         self.assertGreater(assessment.cooling_efficiency_percent, 80.0)
         self.assertGreater(len(assessment.maintenance_recommendations), 0)
-        self.assertIn("Cooler Master Liquid 360", assessment.predictive_advisory)
+        self.assertIn("generic", assessment.predictive_advisory)
+
+    def test_unavailable_storage_is_not_reported_as_healthy(self):
+        assessment = self.engine.evaluate_system(
+            {"cpu": {}, "gpu": {}},
+            {"available": False, "wear_percent": None, "health_percent": None},
+        )
+        self.assertIsNone(assessment.ssd_health_percent)
+        self.assertIsNone(assessment.ssd_estimated_years_remaining)
+        self.assertIn("unavailable", assessment.ssd_wear_status.lower())
+        self.assertTrue(any("SMART wear data is unavailable" in item for item in assessment.maintenance_recommendations))
 
     def test_storage_health_sensor(self):
         sh = get_storage_health("C:")

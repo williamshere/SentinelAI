@@ -5,7 +5,7 @@ Formula: 40% Thermal + 30% Memory/Storage + 30% Hardware Headroom.
 
 
 def _calc_gpu_thermal_score(temp: float) -> float:
-    """Calculate GPU thermal health score (0-100) based on RTX 5070 curve."""
+    """Calculate a generic GPU thermal health score (0-100)."""
     if temp <= 0:
         return 100.0
     if temp <= 65.0:
@@ -22,7 +22,7 @@ def _calc_gpu_thermal_score(temp: float) -> float:
 
 
 def _calc_cpu_thermal_score(temp: float) -> float:
-    """Calculate CPU thermal health score (0-100) based on Intel Core i7-12700 curve."""
+    """Calculate a generic CPU thermal health score (0-100)."""
     if temp <= 0:
         return 100.0
     if temp <= 65.0:

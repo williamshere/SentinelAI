@@ -101,9 +101,6 @@ def _load_lm_studio_token() -> str:
                             return str(_v["token"]).strip()
         except Exception:
             pass
-    # fallback wired from UI creation
-    _hard = "sk-lm-vh3D19PD:uKMpyYZNjx5SWvQR0tZw"
-    if _hard: return _hard
     return ""
 
 LM_STUDIO_API_KEY = _load_lm_studio_token()
@@ -112,7 +109,20 @@ OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = "gemma2:9b"  # Switchable: "gemma2:9b", "gemma2:27b", "gemma3:latest"
 OLLAMA_TIMEOUT_SECONDS = 25.0
 
+# Optional component details for AI diagnostics. Leave unknown fields blank;
+# CPU/GPU/memory/storage details are detected from live telemetry where possible.
+HARDWARE_PROFILE = {
+    "cpu": "",
+    "motherboard": "",
+    "cpu_cooler": "",
+    "gpu": "",
+    "storage": "",
+}
+
+# Generic assumptions used only for the explicitly rough SSD lifespan estimate.
+SSD_RATED_TBW_ESTIMATE = 600.0
+SSD_DAILY_WRITE_GB_ESTIMATE = 30.0
+
 # Chat UI watchdog: re-enable the input if a local inference call runs longer
 # than this.  The worker thread keeps running; only the UI is released.
 CHAT_WATCHDOG_SECONDS = 45
-

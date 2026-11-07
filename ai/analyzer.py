@@ -52,7 +52,7 @@ except (ImportError, ValueError):
             from recommendations import get_deterministic_recommendations
         except (ImportError, ModuleNotFoundError):
             SYSTEM_DIAGNOSTIC_PROMPT = """You are Sentinel AI, an expert real-time hardware diagnostics and system security engine.
-Your task is to analyze telemetry snapshots and alert logs from a high-performance Windows workstation (powered by an Intel Core i7-12700 CPU and NVIDIA GeForce RTX 5070 GPU with 12GB VRAM).
+Analyze the supplied telemetry for the user's computer. Use only component details explicitly provided in telemetry. If a component model or limit is unknown, say so and avoid model-specific claims or unsupported thresholds.
 
 Analyze the provided telemetry metrics and produce a concise, professional diagnostic assessment in the following format:
 1. OVERALL ASSESSMENT: One sentence summarizing current hardware stability and threat level.

@@ -31,7 +31,7 @@ class TestChatEngine(unittest.TestCase):
     def test_system_context_builder(self):
         metrics = {
             "cpu": {"usage": 15.5, "frequency": 4200.0, "temperature": 48.0, "power_watts": 65.0},
-            "gpu": {"usage": 45.0, "temperature": 52.0, "vram_used": 4 * 1024**3, "vram_total": 12 * 1024**3,
+            "gpu": {"name": "Example GPU", "usage": 45.0, "temperature": 52.0, "vram_used": 4 * 1024**3, "vram_total": 12 * 1024**3,
                     "power_watts": 140.0, "clock_mhz": 2400, "available": True},
             "ram": {"percent": 42.0, "used": 13.4 * 1024**3, "total": 32 * 1024**3},
             "disk": {"percent": 65.0},
@@ -52,10 +52,10 @@ class TestChatEngine(unittest.TestCase):
             recent_sessions=recent_sessions,
         )
 
-        self.assertIn("Intel Core i7-12700", context)
-        self.assertIn("Gigabyte Z790 Aorus Elite AX", context)
-        self.assertIn("Cooler Master MasterLiquid 360", context)
-        self.assertIn("RTX 5070", context)
+        self.assertIn("Example GPU", context)
+        self.assertIn("unknown, say so", BASE_SYSTEM_INSTRUCTIONS)
+        self.assertNotIn("Intel Core i7-12700", context)
+        self.assertNotIn("RTX 5070", context)
         self.assertIn("48.0°C", context)
         self.assertIn("96.5%", context)
         self.assertIn("Overwatch 2", context)
@@ -68,6 +68,17 @@ class TestChatEngine(unittest.TestCase):
 
         self.engine.clear_history()
         self.assertEqual(len(self.engine.history), 0)
+
+    def test_configured_hardware_profile_is_included(self):
+        with patch(
+            "ai.prompts.HARDWARE_PROFILE",
+            {"cpu": "Example CPU", "motherboard": "Example board", "cpu_cooler": "", "gpu": "", "storage": ""},
+        ):
+            context = self.engine.build_system_context(metrics={"cpu": {}, "ram": {}})
+
+        self.assertIn("Example CPU", context)
+        self.assertIn("Example board", context)
+        self.assertNotIn("RTX 5070", context)
 
     @patch("ai.chat_engine.is_port_open", return_value=True)
     @patch("urllib.request.urlopen")
@@ -102,7 +113,7 @@ class TestChatEngine(unittest.TestCase):
         # LM Studio / Ollama happen to be running on the test machine.
         res = self.engine.ask("What is my GPU status?", system_context="Context info")
         self.assertTrue(res["success"])
-        self.assertIn("RTX 5070", res["content"])
+        self.assertIn("manufacturer limits", res["content"])
         self.assertEqual(res["source"], "Sentinel Core (Built-in Diagnostics)")
         self.assertEqual(len(self.engine.history), 2)
 

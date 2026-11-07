@@ -10,6 +10,7 @@ import logging
 import socket
 from typing import Any
 import urllib.request
+from ai.prompts import hardware_profile_lines
 
 try:
     from PySide6.QtCore import QThread, Signal
@@ -50,20 +51,12 @@ logger = logging.getLogger("sentinel.chat")
 BASE_SYSTEM_INSTRUCTIONS = """You are Sentinel AI, an expert real-time hardware diagnostics and personal system performance assistant.
 You provide technical, accurate, concise, and structured guidance regarding hardware thermals, power draws, fan curves, overclocking/undervolting, gaming performance, and physical degradation.
 
-Workstation Specifications:
-- CPU: Intel Core i7-12700 (12 cores / 20 threads, LGA 1700)
-- Motherboard: Gigabyte Z790 Aorus Elite AX
-- CPU Cooler: Cooler Master MasterLiquid 360 AIO Liquid Cooler
-- Chassis: G8 Panoramic Dual-Chamber Case
-- GPU: NVIDIA GeForce RTX 5070 (12GB GDDR7)
-- RAM: 32 GB DDR5/DDR4
-- Storage: High-Performance NVMe M.2 SSD (C: Drive)
-
 Guidelines:
 - Provide direct, clear, bulleted answers without conversational filler or fluff.
 - Reference the user's real-time telemetry and predictive baselines directly when answering.
+- Use only component details explicitly provided in the hardware profile or telemetry. If a model or limit is unknown, say so and avoid model-specific claims.
 - If the user asks about gaming sessions, analyze thermal headroom, clock stability, and power consumption.
-- If asked about cooling, evaluate the Cooler Master 360 AIO liquid efficiency (theta in °C/W) and radiator airflow.
+- Treat cooling and storage lifespan values as estimates; explain their assumptions and avoid presenting generic reference values as measured component specifications.
 """
 
 
@@ -130,7 +123,7 @@ class ChatEngine:
         return {
             "lm_studio": lm_online,
             "ollama": ollama_online,
-            "active_backend": "LM Studio (RTX 5070)" if lm_online else ("Ollama" if ollama_online else "Offline Engine"),
+            "active_backend": "LM Studio" if lm_online else ("Ollama" if ollama_online else "Offline Engine"),
         }
 
     def build_system_context(
@@ -142,7 +135,12 @@ class ChatEngine:
         alerts: list[dict[str, Any]] | None = None,
     ) -> str:
         """Constructs rich contextual snapshot for LLM conditioning."""
-        lines = [BASE_SYSTEM_INSTRUCTIONS, "\n### CURRENT SYSTEM STATE SNAPSHOT:"]
+        lines = [
+            BASE_SYSTEM_INSTRUCTIONS,
+            "",
+            *hardware_profile_lines(metrics or {}, storage_health),
+            "\n### CURRENT SYSTEM STATE SNAPSHOT:",
+        ]
 
         if metrics:
             cpu = metrics.get("cpu", {})
@@ -155,7 +153,7 @@ class ChatEngine:
             )
             if gpu.get("available"):
                 lines.append(
-                    f"- GPU (RTX 5070): {gpu.get('usage', 0.0):.0f}% usage | Temp: {gpu.get('temperature', 0.0):.0f}°C | "
+                    f"- GPU ({gpu.get('name', 'GPU')}): {gpu.get('usage', 0.0):.0f}% usage | Temp: {gpu.get('temperature', 0.0):.0f}°C | "
                     f"VRAM: {gpu.get('vram_used', 0) / (1024**3):.1f} / {gpu.get('vram_total', 0) / (1024**3):.1f} GB | "
                     f"Power: {gpu.get('power_watts', 0.0):.0f}W | Clock: {gpu.get('clock_mhz', 0)} MHz"
                 )
@@ -167,17 +165,24 @@ class ChatEngine:
         if predictive_data:
             lines.append("\n### PREDICTIVE HARDWARE DEGRADATION TELEMETRY:")
             lines.append(
-                f"- Cooler Master 360 AIO Efficiency: {predictive_data.get('cooling_efficiency', 95.0)}% "
-                f"(Thermal Resistance θ = {predictive_data.get('thermal_resistance', 0.22):.3f} °C/W)"
+                f"- Cooling reference efficiency: {predictive_data.get('cooling_efficiency', 95.0)}% "
+                f"(Thermal Resistance θ = {predictive_data.get('thermal_resistance', 0.22):.3f} °C/W; not a model-specific rating)"
             )
-            lines.append(f"- GPU Hotspot Spread: +{predictive_data.get('hotspot_delta', 12.0):.1f}°C (Die Contact: Optimal)")
-            lines.append(f"- NVMe Flash Remaining Lifespan: ~{predictive_data.get('ssd_years', 50.0):.1f} Years")
+            lines.append(f"- GPU Hotspot Spread: +{predictive_data.get('hotspot_delta', 12.0):.1f}°C (generic reference)")
+            ssd_years = predictive_data.get("ssd_years")
+            if ssd_years is not None:
+                lines.append(f"- Rough SSD lifespan estimate: ~{ssd_years:.1f} years (generic endurance/write assumptions)")
+            else:
+                lines.append("- SSD lifespan estimate: unavailable (SMART wear data unavailable)")
 
         if storage_health:
-            lines.append(
-                f"- Storage SMART: Wear Level {storage_health.get('wear_percent', 2.0)}% | "
-                f"Lifetime TBW: {storage_health.get('tbw_terabytes', 12.0)} TB | Read/Write Errors: 0"
-            )
+            if storage_health.get("available"):
+                wear = storage_health.get("wear_percent")
+                lines.append(
+                    f"- Storage SMART: {f'Wear Level {wear}%' if wear is not None else 'Wear level unavailable'}"
+                )
+            else:
+                lines.append("- Storage SMART: unavailable; do not infer a healthy or worn state.")
 
         if recent_sessions:
             lines.append("\n### RECENT GAMING SESSIONS:")
@@ -329,17 +334,16 @@ class ChatEngine:
         q = query.lower()
         if any(w in q for w in ["cooler", "aio", "temp", "liquid", "fan"]):
             return (
-                "• Cooler Master MasterLiquid 360 Status: High thermal efficiency (>92%).\n"
-                "• Pump & Radiator: Dual-chamber pump maintaining coolant velocity through top exhaust radiator.\n"
-                "• Airflow Guideline: Ensure G8 Panoramic front and bottom intake mesh filters remain clear of dust.\n"
-                "• Thermal Resistance: θ is within optimal bounds for the Intel Core i7-12700 (<0.25 °C/W)."
+                "• Check the supplied CPU/GPU temperatures against the component manufacturer's limits.\n"
+                "• Compare temperatures at similar workload and ambient conditions; a single reading is not enough to diagnose cooler health.\n"
+                "• Verify the installed cooler's pump/fan operation and case airflow using its manufacturer's guidance.\n"
+                "• Generic thermal-resistance values are estimates, not a component-specific rating."
             )
         elif any(w in q for w in ["gpu", "rtx", "5070", "vram", "graphics"]):
             return (
-                "• NVIDIA GeForce RTX 5070 12GB: Operating within standard gaming parameters.\n"
-                "• Junction & Hotspot Spread: Optimal die contact (spread <= 14°C).\n"
-                "• Power & Clocks: Standard boost curve active with zero thermal throttling observed.\n"
-                "• Note: 95%+ GPU utilization during active gaming is expected and signifies optimal 3D workload offload."
+                "• GPU utilization near 100% can be normal during a demanding workload.\n"
+                "• Compare GPU temperature and hotspot readings with the detected model's manufacturer limits.\n"
+                "• This offline response cannot confirm clocks, throttling, or component health without available telemetry."
             )
         elif any(w in q for w in ["game", "fps", "lag", "latency", "rivals", "overwatch", "poe"]):
             return (
@@ -349,20 +353,20 @@ class ChatEngine:
             )
         elif any(w in q for w in ["ssd", "storage", "disk", "nvme", "health", "tbw"]):
             return (
-                "• Primary NVMe M.2 SSD: Drive wear is nominal with >97% flash endurance remaining.\n"
-                "• SMART Reliability: Zero read/write ECC hardware errors detected.\n"
-                "• I/O Optimization: High-frequency telemetry database logging is isolated to local AppData to prevent sync overhead."
+                "• Check the drive's SMART status with the manufacturer utility; unavailable SMART data does not indicate a healthy drive.\n"
+                "• Any lifespan projection is rough and depends on the drive's rated endurance and actual daily writes.\n"
+                "• Keep a current backup regardless of the displayed wear estimate."
             )
         elif any(w in q for w in ["stability", "triage", "system", "check"]):
             return (
-                "• Workstation Health: Core systems (Intel Core i7-12700, RTX 5070, Z790 Aorus) are nominal.\n"
-                "• Memory & Storage: 32GB RAM operating with adequate available headroom.\n"
+                "• Review the current CPU, GPU, memory, and disk telemetry for sustained threshold breaches.\n"
+                "• Component-specific limits depend on the detected or configured hardware profile.\n"
                 "• Recommendation: To connect local Gemma 2 inference, start the Local Server in LM Studio on port 1234."
             )
         else:
             return (
-                f"Sentinel AI is continuously monitoring your Intel Core i7-12700 and RTX 5070.\n\n"
-                "• Thermals: CPU and GPU operating within safe limits.\n"
+                "Sentinel AI is monitoring the available system telemetry.\n\n"
+                "• Thermals: Compare readings with the detected components' manufacturer limits.\n"
                 "• Game Mode: Automatic low-overhead foreground detection active.\n"
                 "• Inference Engine: Standing by. (Toggle 'Start Server' in LM Studio on port 1234 to route conversational questions through Gemma 2)."
             )

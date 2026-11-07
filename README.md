@@ -10,7 +10,7 @@ SentinelAI is configured for low-impact monitoring: telemetry refreshes every tw
 - **Process monitor** — live per-process CPU and resident memory usage, sorted by CPU and refreshed every 5 s.
 - **Threshold alerts** — edge-triggered warnings/criticals with hysteresis and a 60-second debounce, delivered as desktop toasts and persisted to SQLite. Alerting keeps running when the app is minimized to the system tray.
 - **Weighted PC Health Score** — 40% thermals, 30% RAM/disk, 30% thermal headroom, recomputed every tick.
-- **Predictive maintenance** — AIO liquid-cooling efficiency (θ in °C/W), GPU hotspot/die-contact spread, and SSD lifespan projection from SMART wear.
+- **Predictive maintenance** — generic-reference cooling efficiency, GPU hotspot spread, and an explicitly rough SSD lifespan estimate when SMART wear data is available. SMART-unavailable readings remain unknown rather than being presented as healthy.
 - **Game Mode** — automatic detection of 25+ game executables (foreground-window check + throttled process scan, ~zero in-game overhead), Do-Not-Disturb alert suppression while gaming, and post-session reports (duration, peak temps, throttle events). Manual toggle available; turning it off returns to automatic detection.
 - **Ask Sentinel AI chat** — conversational diagnostics with live telemetry injected as context. Uses LM Studio (port 1234) or Ollama (port 11434) when available, with an instant offline heuristic engine otherwise.
 - **Driver audit** — enumerates installed drivers (GPU, chipset, audio, network, storage) via PowerShell/CIM, plus one-click PnP rescan and Device Manager.
@@ -48,7 +48,7 @@ To build a standalone `.exe`, see `docs/PACKAGING_GUIDE.md` (or run `python buil
 
 ## Configuration (`config.py`)
 
-All tunables live in one place: refresh intervals (`UI_REFRESH_INTERVAL_MS`, `DB_LOG_INTERVAL_MS`), WMI cache (`WMI_SENSOR_INTERVAL_SECONDS`), alert thresholds (`THRESHOLDS`), debounce (`ALERT_DEBOUNCE_SECONDS`), snapshot retention (`RETENTION_DAYS`, auto-pruned on startup), auto-diagnostics (`AUTO_DIAGNOSTICS_ENABLED`, `AUTO_DIAG_COOLDOWN_SECONDS`), and the local-LLM backend (`LLM_BACKEND`: `"auto"` tries LM Studio on `:1234`, then Ollama on `:11434`; `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_SECONDS`).
+All tunables live in one place: refresh intervals (`UI_REFRESH_INTERVAL_MS`, `DB_LOG_INTERVAL_MS`), WMI cache (`WMI_SENSOR_INTERVAL_SECONDS`), alert thresholds (`THRESHOLDS`), debounce (`ALERT_DEBOUNCE_SECONDS`), snapshot retention (`RETENTION_DAYS`, auto-pruned on startup), auto-diagnostics (`AUTO_DIAGNOSTICS_ENABLED`, `AUTO_DIAG_COOLDOWN_SECONDS`), and the local-LLM backend (`LLM_BACKEND`: `"auto"` tries LM Studio on `:1234`, then Ollama on `:11434`; `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_SECONDS`). Optional `HARDWARE_PROFILE` values in `config.py` let you supply CPU, motherboard, cooler, GPU, and storage models when sensors cannot detect them. The rough SSD lifespan estimate uses configurable `SSD_RATED_TBW_ESTIMATE` and `SSD_DAILY_WRITE_GB_ESTIMATE` assumptions; set these to match the drive and typical workload, and treat any resulting projection as approximate.
 
 ## Project structure
 

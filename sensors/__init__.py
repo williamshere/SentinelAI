@@ -12,18 +12,18 @@ try:
 except ImportError:
     def get_storage_health(drive_letter: str = "C:", force_refresh: bool = False) -> dict:
         return {
-            "model": "High-Performance NVMe SSD (C:)",
-            "media_type": "SSD",
-            "health_percent": 98.0,
-            "wear_percent": 2.0,
-            "tbw_terabytes": 14.5,
-            "temperature_c": 38.0,
-            "power_on_hours": 1420,
-            "unsafe_shutdowns": 0,
-            "read_errors": 0,
-            "write_errors": 0,
-            "available": True,
-            "source": "fallback_baseline",
+            "model": "Storage SMART unavailable",
+            "media_type": "Unknown",
+            "health_percent": None,
+            "wear_percent": None,
+            "tbw_terabytes": None,
+            "temperature_c": None,
+            "power_on_hours": None,
+            "unsafe_shutdowns": None,
+            "read_errors": None,
+            "write_errors": None,
+            "available": False,
+            "source": "unavailable",
         }
 
 __all__ = [
