@@ -105,7 +105,7 @@ class TestRecommendations(unittest.TestCase):
             "gpu": {"available": False},
         }
         recs = get_deterministic_recommendations(metrics)
-        self.assertTrue(any("Noctua" in r or "thermal limit critical" in r for r in recs))
+        self.assertTrue(any("CPU temperature is high" in r for r in recs))
 
     def test_gpu_and_vram_recommendations(self):
         metrics = {
@@ -121,8 +121,8 @@ class TestRecommendations(unittest.TestCase):
             },
         }
         recs = get_deterministic_recommendations(metrics)
-        self.assertTrue(any("GPU Tweak III" in r or "82°C" in r for r in recs))
-        self.assertTrue(any("RTX 5070 VRAM near capacity" in r or "quantize" in r for r in recs))
+        self.assertTrue(any("GPU core temperature is elevated" in r for r in recs))
+        self.assertTrue(any("GPU memory is near capacity" in r for r in recs))
 
 
 class TestPromptBuilder(unittest.TestCase):

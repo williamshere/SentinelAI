@@ -98,9 +98,9 @@ except ImportError:
                 cpu_health_status = "Optimal"
                 gpu_hotspot_delta = 12.0
                 gpu_contact_status = "Optimal Contact"
-                ssd_health_percent = 98.0
-                ssd_estimated_years_remaining = 50.0
-                ssd_wear_status = "Healthy"
+                ssd_health_percent = None
+                ssd_estimated_years_remaining = None
+                ssd_wear_status = "SMART unavailable"
                 predictive_advisory = "Nominal operations."
             return Dummy()
 
@@ -112,14 +112,14 @@ except ImportError:
     except ImportError:
         def get_storage_health(*args, **kwargs):
             return {
-                "model": "High-Performance NVMe SSD (C:)",
-                "media_type": "SSD",
-                "health_percent": 98.0,
-                "wear_percent": 2.0,
-                "tbw_terabytes": 14.5,
-                "temperature_c": 38.0,
-                "available": True,
-                "source": "fallback_baseline",
+                "model": "Storage SMART unavailable",
+                "media_type": "Unknown",
+                "health_percent": None,
+                "wear_percent": None,
+                "tbw_terabytes": None,
+                "temperature_c": None,
+                "available": False,
+                "source": "unavailable",
             }
 from ai.health import calculate_health_score
 from database.manager import DatabaseManager
@@ -342,16 +342,16 @@ class SentinelDashboard(QMainWindow):
 
         self.driver_manager = DriverManager()
         self._last_storage_health = {
-            "model": "High-Performance NVMe SSD (C:)",
-            "media_type": "SSD",
-            "health_percent": 98.0,
-            "wear_percent": 2.0,
-            "tbw_terabytes": 14.5,
-            "temperature_c": 38.0,
-            "available": True,
-            "source": "baseline_cache",
+            "model": "Storage SMART unavailable",
+            "media_type": "Unknown",
+            "health_percent": None,
+            "wear_percent": None,
+            "tbw_terabytes": None,
+            "temperature_c": None,
+            "available": False,
+            "source": "unavailable",
         }
-        self._last_storage_check_time = time.time()
+        self._last_storage_check_time = 0.0
         self.game_mode_mgr = GameModeManager(
             db_manager=self.db_manager,
             alert_manager=self.alert_manager,
@@ -835,7 +835,7 @@ class SentinelDashboard(QMainWindow):
         pred_header = QHBoxLayout()
         pred_title = QLabel("🛡️ Predictive Hardware Wear & Thermal Degradation Tracking")
         pred_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #eaf1ff;")
-        pred_hw_badge = QLabel("Gigabyte Z790 Aorus Elite AX • Cooler Master Liquid 360 • G8 Panoramic")
+        pred_hw_badge = QLabel("Generic reference values • hardware profile configurable in config.py")
         pred_hw_badge.setStyleSheet("font-size: 11px; color: #38bdf8; background-color: #0c4a6e; border-radius: 4px; padding: 4px 8px; font-weight: 600;")
         pred_header.addWidget(pred_title)
         pred_header.addStretch()
@@ -916,7 +916,7 @@ class SentinelDashboard(QMainWindow):
         header.setStyleSheet("font-size: 28px; font-weight: bold; color: #f8fafc;")
         header_layout.addWidget(header, 1)
 
-        # Manual Trigger Button for Local LLM on RTX 5070
+        # Manual trigger for the configured local LLM backend.
         self.btn_run_diagnostics = QPushButton("⚡  Run AI Diagnostics", self)
         self.btn_run_diagnostics.setCursor(Qt.PointingHandCursor)
         self.btn_run_diagnostics.setStyleSheet("""
@@ -951,7 +951,7 @@ class SentinelDashboard(QMainWindow):
         card_layout.setSpacing(10)
 
         diag_title_layout = QHBoxLayout()
-        diag_title = QLabel("🤖 Local LLM Diagnostic Engine (RTX 5070)")
+        diag_title = QLabel("🤖 Local LLM Diagnostic Engine")
         diag_title.setStyleSheet("font-size: 17px; font-weight: 600; color: #38bdf8;")
         diag_title_layout.addWidget(diag_title, 1)
 
@@ -1023,7 +1023,7 @@ class SentinelDashboard(QMainWindow):
         self.last_auto_diag_time = now
 
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        dispatch_notice = f"[CRITICAL EVENT] {trigger_metric.upper()} threshold breached — dispatching automated AI diagnosis on RTX 5070..."
+        dispatch_notice = f"[CRITICAL EVENT] {trigger_metric.upper()} threshold breached — dispatching automated local AI diagnosis..."
         _capped_insert(self.log_list, make_list_item(dispatch_notice, "critical"))
         if hasattr(self, "logs_full_list"):
             _capped_insert(self.logs_full_list, make_list_item(dispatch_notice, "critical"))
@@ -1102,7 +1102,7 @@ class SentinelDashboard(QMainWindow):
 
         # Footer Actions
         f_row = QHBoxLayout()
-        info_lbl = QLabel(f"Total Discovered Drivers: {len(drivers)} • Calibrated for Gigabyte Z790 & RTX 5070")
+        info_lbl = QLabel(f"Total discovered drivers: {len(drivers)}")
         info_lbl.setStyleSheet("font-size: 11px; color: #64748b;")
         f_row.addWidget(info_lbl, 1)
 
@@ -1128,7 +1128,7 @@ class SentinelDashboard(QMainWindow):
             self.ai_status_label.setText(f"Diagnostics Status: [AUTO-TRIAGE] Evaluating critical event: {trigger_reason}...")
             self.ai_status_label.setStyleSheet("font-size: 12px; color: #fb7185; font-weight: 600;")
         else:
-            self.ai_status_label.setText("Diagnostics Status: Querying local model on RTX 5070...")
+            self.ai_status_label.setText("Diagnostics Status: Querying configured local model...")
             self.ai_status_label.setStyleSheet("font-size: 12px; color: #38bdf8;")
 
         self.btn_run_diagnostics.setEnabled(False)
@@ -1416,7 +1416,7 @@ class SentinelDashboard(QMainWindow):
         title_box.addWidget(chat_desc)
         header_row.addLayout(title_box, 1)
 
-        self.chat_backend_badge = QLabel("🟢 Connected: LM Studio / Ollama • RTX 5070 Offload")
+        self.chat_backend_badge = QLabel("🟢 Connected: LM Studio / Ollama • Local inference")
         self.chat_backend_badge.setStyleSheet(
             "font-size: 11px; font-weight: 600; color: #34d399; background-color: #064e3b; "
             "border: 1px solid #059669; border-radius: 6px; padding: 6px 12px;"
@@ -1437,8 +1437,8 @@ class SentinelDashboard(QMainWindow):
 
         suggested_prompts = [
             "🔍 System Stability Triage",
-            "🌊 Liquid 360 AIO Performance",
-            "🔥 GPU Hotspot & VRAM Check",
+            "🌡️ Cooling Performance",
+            "🔥 GPU Temperature & VRAM Check",
             "🎮 Review Gaming Thermals",
             "💾 NVMe Health & Lifespan",
         ]
@@ -1503,9 +1503,8 @@ class SentinelDashboard(QMainWindow):
         # Initial welcome greeting bubble
         welcome_msg = (
             "👋 Greetings! I am Sentinel AI, your dedicated hardware diagnostics and performance assistant.\n\n"
-            "I am continuously monitoring your Intel Core i7-12700 CPU, Cooler Master Liquid 360 AIO, "
-            "Gigabyte Z790 Aorus Elite AX motherboard, and NVIDIA GeForce RTX 5070 GPU in your G8 Panoramic chassis.\n\n"
-            "Feel free to ask about your live thermals, physical cooler degradation, NVMe SSD endurance, or past gaming sessions."
+            "I use available live telemetry and detected or configured hardware details. Unknown components are not assumed.\n\n"
+            "Ask about current thermals, system performance, storage SMART data, or past gaming sessions."
         )
         self._append_chat_bubble(
             "assistant",
@@ -1787,7 +1786,7 @@ class SentinelDashboard(QMainWindow):
 
         welcome_msg = (
             "Chat history cleared. I am ready for new questions regarding your "
-            "Intel Core i7-12700, Cooler Master Liquid 360 AIO, Gigabyte Z790 Aorus Elite AX, or RTX 5070."
+            "your detected telemetry, hardware profile, or past gaming sessions."
         )
         self._append_chat_bubble(
             "assistant",
@@ -1919,7 +1918,7 @@ class SentinelDashboard(QMainWindow):
             "WMI LHM Sensor" if is_wmi_pwr else "Dynamic TDP (i7-12700)",
             val_color="#38bdf8"
         )
-        add_row(grid_sys, 3, "Host Subsystems:", "Intel i7-12700 • RTX 5070 • Z790 AX", val_color="#e2e8f0")
+        add_row(grid_sys, 3, "Hardware profile:", "Detected telemetry + optional config.py overrides", val_color="#e2e8f0")
         grid_top.addWidget(card_sys, 0, 0)
 
         # --- Refresh Rate Setting ---
@@ -1958,7 +1957,7 @@ class SentinelDashboard(QMainWindow):
 
         # 2. Local AI Engine & Diagnostics Card
         card_ai, grid_ai = create_card("cardAiEngine", "Local AI Engine & Triage", "🧠")
-        add_row(grid_ai, 0, "Inference Engine:", "Ollama (gemma2:9b) on RTX 5070", val_color="#38bdf8")
+        add_row(grid_ai, 0, "Inference Engine:", "Configured local model backend", val_color="#38bdf8")
         add_row(grid_ai, 1, "Auto Triage Cooldown:", f"{AUTO_DIAG_COOLDOWN_SECONDS} seconds between alerts", val_color="#93c5fd")
         add_row(grid_ai, 2, "PC Health Matrix:", "40% Thermals • 30% RAM/Disk • 30% Headroom", val_color="#a7f3d0")
         add_row(grid_ai, 3, "Predictive Engine:", "Cooling Eff. • Contact Delta • SSD Health", val_color="#e2e8f0")
@@ -2096,7 +2095,7 @@ class SentinelDashboard(QMainWindow):
         drv_info = QVBoxLayout()
         drv_title = QLabel("🧰  Hardware Drivers & Firmware")
         drv_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #f8fafc;")
-        drv_desc = QLabel("Audit installed drivers (RTX 5070, Z790, 2.5GbE, NVMe) and scan PnP.")
+        drv_desc = QLabel("Audit installed device drivers and scan Plug and Play hardware.")
         drv_desc.setStyleSheet("font-size: 13px; color: #8ba0bd;")
         drv_status = QLabel("Audit: Ready • Device Manager & PnP rescan available")
         drv_status.setStyleSheet("font-size: 12px; color: #38bdf8; font-weight: 500;")
@@ -2507,9 +2506,14 @@ class SentinelDashboard(QMainWindow):
         if hasattr(self, "predictive_engine") and hasattr(self, "lbl_pred_cooling"):
             try:
                 pa = self.predictive_engine.evaluate_system(data, self._last_storage_health)
-                c_text = f"🌊 AIO Liquid Efficiency: {pa.cooling_efficiency_percent}%\nθ = {pa.cpu_thermal_resistance:.3f} °C/W • {pa.cpu_health_status}"
-                h_text = f"🔥 RTX 5070 Hotspot Spread: +{pa.gpu_hotspot_delta:.1f}°C\n{pa.gpu_contact_status}"
-                s_text = f"💾 NVMe Flash Health: {pa.ssd_health_percent}%\nEst. Lifespan: ~{pa.ssd_estimated_years_remaining} Years • {pa.ssd_wear_status}"
+                c_text = f"🌊 Cooling Reference Efficiency: {pa.cooling_efficiency_percent}%\nθ = {pa.cpu_thermal_resistance:.3f} °C/W • {pa.cpu_health_status}"
+                h_text = f"🔥 GPU Hotspot Spread: +{pa.gpu_hotspot_delta:.1f}°C\n{pa.gpu_contact_status}"
+                health_text = f"{pa.ssd_health_percent:.1f}%" if pa.ssd_health_percent is not None else "Unavailable"
+                years_text = (
+                    f"~{pa.ssd_estimated_years_remaining:.1f} years (rough)"
+                    if pa.ssd_estimated_years_remaining is not None else "Unavailable"
+                )
+                s_text = f"💾 Storage SMART Health: {health_text}\nEst. lifespan: {years_text} • {pa.ssd_wear_status}"
                 self.lbl_pred_cooling.setText(c_text)
                 self.lbl_pred_hotspot.setText(h_text)
                 self.lbl_pred_ssd.setText(s_text)

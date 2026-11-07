@@ -5,8 +5,8 @@ ai/recommendations.py - Deterministic rule-based hardware advice and recommendat
 
 def get_deterministic_recommendations(metrics: dict, health_score: dict | None = None) -> list[str]:
     """
-    Evaluates raw metrics against known desktop workstation thresholds and produces
-    targeted technical recommendations.
+    Evaluates raw metrics against general desktop thresholds and produces
+    hardware-agnostic technical recommendations.
     """
     recs = []
     cpu = metrics.get("cpu", {})
@@ -21,9 +21,9 @@ def get_deterministic_recommendations(metrics: dict, health_score: dict | None =
 
     # 1. Thermal checks
     if cpu_temp >= 85.0:
-        recs.append("CPU thermal limit critical (>=85°C): Verify Noctua CPU cooler fan curve and repaste contact frame if throttling persists.")
+        recs.append("CPU temperature is high (>=85°C): Check the processor's thermal limits, cooler operation, and airflow.")
     elif cpu_temp >= 75.0:
-        recs.append("CPU running warm (>=75°C): Ramp Arctic chassis exhaust fans to improve enclosure airflow.")
+        recs.append("CPU temperature is elevated (>=75°C): Check the cooler and case airflow under sustained load.")
 
     if gpu.get("available"):
         gpu_temp = float(gpu.get("temperature", 0.0) or 0.0)
@@ -33,9 +33,9 @@ def get_deterministic_recommendations(metrics: dict, health_score: dict | None =
         vram_pct = (vram_used / vram_total) * 100.0
 
         if gpu_temp >= 82.0:
-            recs.append("GPU core temperature elevated (>=82°C): Adjust GPU Tweak III fan profile and inspect lower chassis intake clearance.")
+            recs.append("GPU core temperature is elevated (>=82°C): Check the GPU's manufacturer limits, fan operation, and case airflow.")
         if vram_pct >= 90.0:
-            recs.append(f"RTX 5070 VRAM near capacity ({vram_pct:.1f}%): Reduce context window size or quantize weights for local model inference.")
+            recs.append(f"GPU memory is near capacity ({vram_pct:.1f}%): Reduce graphics or compute workload memory use.")
         elif gpu_usage >= 95.0 and cpu_usage <= 20.0:
             recs.append("GPU bound workload detected: System has significant CPU compute headroom for background logging and analytics.")
 

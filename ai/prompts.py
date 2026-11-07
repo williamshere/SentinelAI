@@ -1,10 +1,15 @@
-"""
-ai/prompts.py - Prompt engineering templates for local LLM hardware diagnostics.
-Designed for quantized Gemma 2 9B and Llama 3.1 8B running locally on NVIDIA RTX 5070.
-"""
+"""Prompt templates for local LLM hardware diagnostics."""
+
+import os
+import platform
+
+try:
+    from config import HARDWARE_PROFILE
+except ImportError:
+    HARDWARE_PROFILE = {}
 
 SYSTEM_DIAGNOSTIC_PROMPT = """You are Sentinel AI, an expert real-time hardware diagnostics and system security engine.
-Your task is to analyze telemetry snapshots and alert logs from a high-performance Windows workstation (powered by an Intel Core i7-12700 CPU and NVIDIA GeForce RTX 5070 GPU with 12GB VRAM).
+Analyze the supplied telemetry for the user's computer. Use only component details explicitly provided in the hardware profile or telemetry. If a component model or limit is unknown, say so and avoid model-specific claims or unsupported thresholds.
 
 Analyze the provided telemetry metrics and produce a concise, professional diagnostic assessment in the following format:
 1. OVERALL ASSESSMENT: One sentence summarizing current hardware stability and threat level.
@@ -13,6 +18,43 @@ Analyze the provided telemetry metrics and produce a concise, professional diagn
 
 Maintain a direct, highly technical, and concise tone without conversational fluff.
 """
+
+
+def hardware_profile_lines(metrics: dict, storage_health: dict | None = None) -> list[str]:
+    """Build a hardware profile from explicit config overrides and live sensor data."""
+    cpu = metrics.get("cpu", {})
+    gpu = metrics.get("gpu", {})
+    ram = metrics.get("ram", {})
+    profile = HARDWARE_PROFILE if isinstance(HARDWARE_PROFILE, dict) else {}
+
+    cpu_model = (
+        str(profile.get("cpu") or "").strip()
+        or str(os.environ.get("PROCESSOR_IDENTIFIER") or "").strip()
+        or str(platform.processor() or "").strip()
+    )
+    gpu_model = (
+        str(gpu.get("name") or "").strip() if gpu.get("available")
+        else str(profile.get("gpu") or "").strip()
+    )
+    storage_health = storage_health or {}
+    storage_model = (
+        str(storage_health.get("model") or "").strip()
+        if storage_health.get("available")
+        else str(profile.get("storage") or "").strip()
+    )
+    components = [
+        ("CPU", cpu_model),
+        ("Motherboard", str(profile.get("motherboard") or "").strip()),
+        ("CPU cooler", str(profile.get("cpu_cooler") or "").strip()),
+        ("GPU", gpu_model),
+        ("Memory", f"{ram['total'] / (1024**3):.1f} GB" if ram.get("total") else ""),
+        ("Storage", storage_model),
+    ]
+    lines = ["### HARDWARE PROFILE (detected or configured; unknown details are omitted)"]
+    lines.extend(f"- {name}: {value}" for name, value in components if value)
+    if len(lines) == 1:
+        lines.append("- No component model details are available.")
+    return lines
 
 
 def build_telemetry_prompt(
@@ -42,6 +84,7 @@ def build_telemetry_prompt(
         f"- Memory (RAM): {ram.get('percent', 0.0):.1f}% used ({ram.get('used', 0) / (1024**3):.1f} / {ram.get('total', 0) / (1024**3):.1f} GB)",
         f"- Disk: {disk.get('percent', 0.0):.1f}% capacity ({disk.get('mount', '/')})",
     ])
+    prompt_lines.extend(hardware_profile_lines(metrics))
 
     if gpu.get("available"):
         prompt_lines.append(

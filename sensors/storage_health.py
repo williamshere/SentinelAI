@@ -21,14 +21,14 @@ def _fallback(source: str = "unavailable") -> dict[str, Any]:
     return {
         "model": "Storage SMART unavailable",
         "media_type": "Unknown",
-        "health_percent": 0.0,
-        "wear_percent": 0.0,
-        "tbw_terabytes": 0.0,
-        "temperature_c": 0.0,
-        "power_on_hours": 0,
-        "unsafe_shutdowns": 0,
-        "read_errors": 0,
-        "write_errors": 0,
+        "health_percent": None,
+        "wear_percent": None,
+        "tbw_terabytes": None,
+        "temperature_c": None,
+        "power_on_hours": None,
+        "unsafe_shutdowns": None,
+        "read_errors": None,
+        "write_errors": None,
         "available": False,
         "source": source,
     }
@@ -67,19 +67,32 @@ def get_storage_health(drive_letter: str = "C:", force_refresh: bool = False) ->
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000), startupinfo=startupinfo,
         )
         raw = json.loads(result.stdout) if result.returncode == 0 and result.stdout.strip() else {}
-        wear = float(raw.get("Wear") or 0.0)
+        if not isinstance(raw, dict) or not raw:
+            _cached_result = _fallback("windows_storage_api_unavailable")
+            return _cached_result.copy()
+
+        def optional_number(key: str, cast=float):
+            value = raw.get(key)
+            if value is None or value == "":
+                return None
+            try:
+                return cast(value)
+            except (TypeError, ValueError):
+                return None
+
+        wear = optional_number("Wear")
         _cached_result = {
             "model": str(raw.get("Model") or "Windows storage device"),
             "media_type": str(raw.get("MediaType") or "SSD"),
-            "health_percent": round(max(0.0, 100.0 - wear), 1),
+            "health_percent": round(max(0.0, 100.0 - wear), 1) if wear is not None else None,
             "wear_percent": wear,
-            "tbw_terabytes": 0.0,
-            "temperature_c": float(raw.get("Temperature") or 0.0),
-            "power_on_hours": int(raw.get("PowerOnHours") or 0),
-            "unsafe_shutdowns": 0,
-            "read_errors": int(raw.get("ReadErrors") or 0),
-            "write_errors": int(raw.get("WriteErrors") or 0),
-            "available": bool(raw),
+            "tbw_terabytes": None,
+            "temperature_c": optional_number("Temperature"),
+            "power_on_hours": optional_number("PowerOnHours", int),
+            "unsafe_shutdowns": optional_number("UnsafeShutdowns", int),
+            "read_errors": optional_number("ReadErrors", int),
+            "write_errors": optional_number("WriteErrors", int),
+            "available": True,
             "source": "windows_storage_api",
         }
     except Exception:
