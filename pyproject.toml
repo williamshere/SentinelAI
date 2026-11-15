@@ -12,6 +12,17 @@ dependencies = [
     "pywin32>=306; sys_platform == 'win32'",
 ]
 
+[project.optional-dependencies]
+gpu = ["pyopencl>=2024.1", "numpy>=1.26"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-q", "--ignore-glob=*backup.py", "--ignore-glob=* (*).py"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["ai", "core", "database", "sensors", "ui"]
+py-modules = ["app", "config"]

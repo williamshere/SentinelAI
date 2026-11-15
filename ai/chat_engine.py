@@ -151,6 +151,7 @@ class ChatEngine:
                 f"- CPU: {cpu.get('usage', 0.0):.1f}% usage | {cpu.get('frequency', 0.0):.0f} MHz | "
                 f"Temp: {cpu.get('temperature', 0.0):.1f}°C | Power: {cpu.get('power_watts', 0.0):.1f}W"
             )
+            lines.append(f"- CPU temperature source: {cpu.get('temp_source', 'unknown')}; power source: {cpu.get('power_source', 'unknown')}. Estimates are not measurements.")
             if gpu.get("available"):
                 lines.append(
                     f"- GPU ({gpu.get('name', 'GPU')}): {gpu.get('usage', 0.0):.0f}% usage | Temp: {gpu.get('temperature', 0.0):.0f}°C | "
@@ -164,11 +165,14 @@ class ChatEngine:
 
         if predictive_data:
             lines.append("\n### PREDICTIVE HARDWARE DEGRADATION TELEMETRY:")
-            lines.append(
-                f"- Cooling reference efficiency: {predictive_data.get('cooling_efficiency', 95.0)}% "
-                f"(Thermal Resistance θ = {predictive_data.get('thermal_resistance', 0.22):.3f} °C/W; not a model-specific rating)"
-            )
-            lines.append(f"- GPU Hotspot Spread: +{predictive_data.get('hotspot_delta', 12.0):.1f}°C (generic reference)")
+            cooling = predictive_data.get("cooling_efficiency")
+            resistance = predictive_data.get("thermal_resistance")
+            if cooling is not None and resistance is not None:
+                lines.append(f"- Cooling reference efficiency: {cooling}% (θ = {resistance:.3f} °C/W; generic reference)")
+            else:
+                lines.append("- Cooling assessment unavailable: measured temperature and sustained power required.")
+            hotspot = predictive_data.get("hotspot_delta")
+            lines.append(f"- GPU hotspot spread: {hotspot:.1f}°C" if hotspot is not None else "- GPU hotspot sensor unavailable.")
             ssd_years = predictive_data.get("ssd_years")
             if ssd_years is not None:
                 lines.append(f"- Rough SSD lifespan estimate: ~{ssd_years:.1f} years (generic endurance/write assumptions)")

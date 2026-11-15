@@ -81,6 +81,7 @@ Maintain a direct, highly technical, and concise tone without conversational flu
                     f"- Memory (RAM): {ram.get('percent', 0.0):.1f}% used ({ram.get('used', 0) / (1024**3):.1f} / {ram.get('total', 0) / (1024**3):.1f} GB)",
                     f"- Disk: {disk.get('percent', 0.0):.1f}% capacity ({disk.get('mount', '/')})",
                 ])
+                lines.append(f"- CPU temperature source: {cpu.get('temp_source', 'unknown')}; power source: {cpu.get('power_source', 'unknown')}. Estimates are not measurements.")
                 if gpu.get("available"):
                     lines.append(f"- GPU: {gpu.get('name', 'NVIDIA GPU')} | Usage: {gpu.get('usage', 0.0):.0f}% | Temp: {gpu.get('temperature', 0.0):.0f}°C")
                 if alerts:

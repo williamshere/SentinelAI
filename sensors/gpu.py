@@ -2,12 +2,15 @@
 sensors/gpu.py - NVIDIA GPU monitoring module via pynvml with fallback.
 Hardened against handle leaks and crashes during extended runtimes.
 """
+import time
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*pynvml.*")
 
 _nvml_initialized: bool = False
 _nvml_available: bool = False
 _nvml_handle = None
+_fallback_retry_at = 0.0
+_fallback_cache = None
 
 
 def _ensure_nvml():
@@ -70,13 +73,19 @@ def get_gpu_info() -> dict:
         except Exception:
             pass
 
+    # Throttle missing-driver probes; unavailable hardware should cost little.
+    global _fallback_retry_at, _fallback_cache
+    if time.monotonic() < _fallback_retry_at and _fallback_cache is not None:
+        return dict(_fallback_cache)
+    _fallback_retry_at = time.monotonic() + 5.0
     # 2. Fallback to gpustat
     try:
         import gpustat
-        gpu = gpustat.GPUStatCollection.new_query().jsonify()[0]
+        gpus = gpustat.GPUStatCollection.new_query().jsonify().get("gpus", [])
+        gpu = gpus[0]
         vram_used_bytes = int(gpu.get("memory.used", 0)) * 1024 * 1024
         vram_total_bytes = int(gpu.get("memory.total", 0)) * 1024 * 1024
-        return {
+        _fallback_cache = {
             "name": gpu.get("name", "NVIDIA GPU"),
             "usage": float(gpu.get("utilization.gpu", gpu.get("usage", 0.0))),
             "temperature": float(gpu.get("temperature.gpu", 0.0)),
@@ -86,11 +95,12 @@ def get_gpu_info() -> dict:
             "clock_mhz": 0,
             "available": True,
         }
+        return dict(_fallback_cache)
     except Exception:
         pass
 
     # 3. Default fallback
-    return {
+    _fallback_cache = {
         "name": "GPU Sensor Unavailable",
         "usage": 0.0,
         "temperature": 0.0,
@@ -100,3 +110,5 @@ def get_gpu_info() -> dict:
         "clock_mhz": 0,
         "available": False,
     }
+
+    return dict(_fallback_cache)

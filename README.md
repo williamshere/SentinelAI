@@ -32,7 +32,15 @@ After setup, double-click `run_sentinel.bat` to launch the app with the supporte
 
 Run the test suite with `python -m pytest`. Keep local LLM inference manual unless the computer has confirmed spare CPU/GPU/RAM capacity; set `AUTO_DIAGNOSTICS_ENABLED = True` in `config.py` only if automatic analysis is desired.
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:03a9302eeec7ef98e8d88d198e3b5f810ea9bdad1984358c42dfec664f9451a5 -->
+
 To build a standalone `.exe`, see `docs/PACKAGING_GUIDE.md` (or run `python build_exe.py`, which wraps PyInstaller via `sentinel.spec`).
+
+For CPU/GPU workloads, saved settings, thermal controls, and result export, see [Compute Lab](docs/COMPUTE_LAB.md).
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Dashboard panels
 
