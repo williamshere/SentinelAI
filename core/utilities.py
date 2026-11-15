@@ -4,9 +4,9 @@ Provides working set RAM trimming, safe disk cleanup, and one-click UAC administ
 """
 import ctypes
 import os
-import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -16,7 +16,7 @@ def clean_ram() -> tuple[bool, str, float]:
     Returns: (success: bool, message: str, mb_freed: float)
     """
     if os.name != "nt":
-        return True, "RAM trimming simulated on non-Windows host.", 0.0
+        return False, "RAM trimming requires Windows.", 0.0
 
     try:
         import psutil
@@ -25,6 +25,13 @@ def clean_ram() -> tuple[bool, str, float]:
         kernel32 = ctypes.windll.kernel32
         psapi = ctypes.windll.psapi
         
+        # Explicit pointer widths prevent handle truncation on 64-bit Windows.
+        from ctypes import wintypes
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        psapi.EmptyWorkingSet.argtypes = [wintypes.HANDLE]
+        psapi.EmptyWorkingSet.restype = wintypes.BOOL
         # PROCESS_QUERY_INFORMATION (0x0400) | PROCESS_SET_QUOTA (0x0100)
         flags = 0x0400 | 0x0100
         trimmed_count = 0
@@ -43,7 +50,7 @@ def clean_ram() -> tuple[bool, str, float]:
         mem_after = psutil.virtual_memory().used
         bytes_freed = max(0, mem_before - mem_after)
         mb_freed = round(bytes_freed / (1024 * 1024), 1)
-        return True, f"Optimized {trimmed_count} processes. Reclaimed ~{mb_freed} MB working set memory.", mb_freed
+        return True, f"Trimmed {trimmed_count} process working sets (~{mb_freed} MB). This does not guarantee faster performance.", mb_freed
     except Exception as e:
         return False, f"Memory optimization encountered an issue: {e}", 0.0
 
@@ -60,18 +67,16 @@ def clean_disk_temp() -> tuple[bool, str, float]:
     if not temp_dir.exists():
         return False, "Temp directory not found", 0.0
 
+    cutoff = time.time() - 86400
     for item in temp_dir.glob("*"):
         try:
-            if item.is_file() or item.is_symlink():
-                size = item.stat().st_size
-                item.unlink()
-                bytes_freed += size
-                files_deleted += 1
-            elif item.is_dir():
-                dir_size = sum(f.stat().st_size for f in item.glob("**/*") if f.is_file())
-                shutil.rmtree(item, ignore_errors=True)
-                bytes_freed += dir_size
-                files_deleted += 1
+            # Skip folders, links, and recent files used by active applications.
+            if item.is_symlink() or not item.is_file() or item.stat().st_mtime >= cutoff:
+                continue
+            size = item.stat().st_size
+            item.unlink()
+            bytes_freed += size
+            files_deleted += 1
         except Exception:
             # Safely bypass in-use locked files without interrupting scan
             continue
