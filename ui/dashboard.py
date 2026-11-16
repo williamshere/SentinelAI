@@ -7,6 +7,7 @@ import csv
 import sys
 import time
 import threading
+import copy
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -363,7 +364,12 @@ class SentinelDashboard(QMainWindow):
         )
         self.predictive_engine = PredictiveEngine(ambient_c=24.0)
         self.chat_engine = ChatEngine()
+        self.chat_watchdog = QTimer(self)
+        self.chat_watchdog.setSingleShot(True)
+        self.chat_watchdog.timeout.connect(self._on_chat_timeout)
         self.chat_worker = None
+        self._chat_workers = set()
+        self._chat_history_generation = 0
         self._chat_busy = False
 
         self.driver_manager = DriverManager()
@@ -1736,18 +1742,23 @@ class SentinelDashboard(QMainWindow):
             )
 
             # 2. Spawn ChatWorker in background QThread
+            # A request owns its own conversation snapshot. Timed-out workers
+            # can finish safely without mutating a later request's history.
+            request_engine = copy.copy(self.chat_engine)
+            request_engine.history = [turn.copy() for turn in self.chat_engine.history]
             self.chat_worker = ChatWorker(
-                chat_engine=self.chat_engine,
+                chat_engine=request_engine,
                 user_message=query,
                 system_context=system_context,
             )
+            self.chat_worker.history_generation = self._chat_history_generation
+            self._chat_workers.add(self.chat_worker)
             self.chat_worker.response_ready.connect(self._on_chat_response_ready)
+            self.chat_worker.finished.connect(self._on_chat_finished)
             self.chat_worker.start()
 
-            # 3. UI Watchdog Timer: guarantee input recovery if local inference
-            #    runs longer than CHAT_WATCHDOG_SECONDS.  The worker thread is
-            #    left alone; only the input widgets are re-enabled.
-            QTimer.singleShot(CHAT_WATCHDOG_SECONDS * 1000, self._on_chat_timeout)
+            # Restore input after the configured timeout while retaining the worker.
+            self.chat_watchdog.start(CHAT_WATCHDOG_SECONDS * 1000)
         except Exception as e:
             self._chat_busy = False
             self.btn_chat_send.setEnabled(True)
@@ -1762,39 +1773,53 @@ class SentinelDashboard(QMainWindow):
             )
 
     def _on_chat_timeout(self):
-        """Watchdog callback to re-enable UI if inference hangs or takes too long."""
+        """Restore input while a slow worker finishes with an isolated history."""
+        if not self._chat_busy:
+            return
         self._chat_busy = False
-        if hasattr(self, "btn_chat_send") and not self.btn_chat_send.isEnabled():
-            self.btn_chat_send.setEnabled(True)
-            self.btn_chat_send.setText("Send 🚀")
-            self.chat_input.setEnabled(True)
-            self.chat_input.setFocus()
-            self._append_chat_bubble(
-                "assistant",
-                f"⚠️ Local inference timed out after {CHAT_WATCHDOG_SECONDS} seconds.\n\n"
-                "• Ensure LM Studio has 'Start Server' toggled ON under the Local Server (<->) tab.\n"
-                "• Verify port 1234 is active and Gemma 2 is loaded with GPU offloading.",
-                source="Sentinel Watchdog",
-                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            )
-
-    def _on_chat_response_ready(self, response: dict):
-        """Receives assistant response from worker thread and displays it in chat."""
-        self._chat_busy = False
-        content = response.get("content", "Diagnostic analysis completed.")
-        source = response.get("source", "Sentinel Core")
-        timestamp = response.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-        self._append_chat_bubble("assistant", content, source=source, timestamp=timestamp)
-
-        # Re-enable inputs
+        self.chat_worker = None
         self.btn_chat_send.setEnabled(True)
         self.btn_chat_send.setText("Send 🚀")
         self.chat_input.setEnabled(True)
         self.chat_input.setFocus()
+        self._append_chat_bubble(
+            "assistant",
+            f"⚠️ Local inference timed out after {CHAT_WATCHDOG_SECONDS} seconds.\n\n"
+            "• Ensure LM Studio has 'Start Server' toggled ON under the Local Server (<->) tab.\n"
+            "• Verify port 1234 is active and Gemma 2 is loaded with GPU offloading.",
+            source="Sentinel Watchdog",
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    def _on_chat_finished(self):
+        worker = self.sender()
+        self._chat_workers.discard(worker)
+        if worker is self.chat_worker:
+            self.chat_watchdog.stop()
+            self._chat_busy = False
+            self.chat_worker = None
+            self.btn_chat_send.setEnabled(True)
+            self.btn_chat_send.setText("Send 🚀")
+            self.chat_input.setEnabled(True)
+        if worker is not None:
+            worker.deleteLater()
+
+    def _on_chat_response_ready(self, response: dict):
+        """Display only the active request; late timed-out results are ignored."""
+        worker = self.sender()
+        if worker is not self.chat_worker or worker is None:
+            return
+        self.chat_watchdog.stop()
+        if worker.history_generation == self._chat_history_generation:
+            self.chat_engine.history = [turn.copy() for turn in worker.chat_engine.history]
+        content = response.get("content", "Diagnostic analysis completed.")
+        source = response.get("source", "Sentinel Core")
+        timestamp = response.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        self._append_chat_bubble("assistant", content, source=source, timestamp=timestamp)
 
     def _clear_chat_history(self):
         """Clears conversational history and resets chat layout."""
+        self._chat_history_generation += 1
         if hasattr(self, "chat_engine"):
             self.chat_engine.clear_history()
 
@@ -2321,13 +2346,14 @@ class SentinelDashboard(QMainWindow):
                 except Exception:
                     pass
                 self.diag_worker.wait(3000)
-            if self.chat_worker and self.chat_worker.isRunning():
-                try:
-                    self.chat_worker.response_ready.disconnect(self._on_chat_response_ready)
-                except Exception:
-                    pass
-                self.chat_worker.wait(3000)
-            if any(worker and worker.isRunning() for worker in (self.diag_worker, self.chat_worker)):
+            # Retain every timed-out worker until it exits; QThread destruction
+            # while running can abort the process.
+            for chat_worker in list(self._chat_workers):
+                if chat_worker.isRunning():
+                    chat_worker.wait(100)
+            if (self.diag_worker and self.diag_worker.isRunning()) or any(
+                worker.isRunning() for worker in self._chat_workers
+            ):
                 # Keep Python/Qt owners alive until finite inference calls return.
                 # Destroying a running QThread can abort the entire process.
                 self._is_quitting = True
