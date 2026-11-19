@@ -24,10 +24,10 @@ GPU_HOTSPOT_CRITICAL_DELTA = 24.0
 
 @dataclass
 class PredictiveAssessment:
-    cpu_thermal_resistance: float
-    cooling_efficiency_percent: float
+    cpu_thermal_resistance: float | None
+    cooling_efficiency_percent: float | None
     cpu_health_status: str
-    gpu_hotspot_delta: float
+    gpu_hotspot_delta: float | None
     gpu_contact_status: str
     ssd_health_percent: float | None
     ssd_estimated_years_remaining: float | None
@@ -155,12 +155,24 @@ class PredictiveEngine:
         cpu_pwr = float(cpu.get("power_watts") or 0.0)
         gpu_temp = float(gpu.get("temperature") or 0.0)
 
-        # 1. CPU AIO Liquid Cooling Analysis
-        theta = self.calculate_thermal_resistance(cpu_temp, cpu_pwr)
-        cooling_eff, cpu_status = self.calculate_cooling_efficiency(theta)
+        # Estimates and idle readings cannot establish cooler health.
+        measured_cpu = (cpu_temp > self.ambient_c and cpu_pwr >= 30
+                        and cpu.get("temp_available") is not False
+                        and not cpu.get("is_estimated_temp")
+                        and not str(cpu.get("power_source", "")).startswith("estimated"))
+        if measured_cpu:
+            theta = self.calculate_thermal_resistance(cpu_temp, cpu_pwr)
+            cooling_eff, cpu_status = self.calculate_cooling_efficiency(theta)
+        else:
+            theta = cooling_eff = None
+            cpu_status = "Unavailable (measured temperature and sustained package power required)"
 
-        # 2. GPU Hotspot Contact Analysis
-        gpu_hotspot_delta, gpu_status = self.evaluate_gpu_hotspot(gpu_temp)
+        hotspot = gpu.get("hotspot_temperature")
+        if gpu_temp > 0 and hotspot is not None and hotspot > gpu_temp:
+            gpu_hotspot_delta, gpu_status = self.evaluate_gpu_hotspot(gpu_temp, hotspot)
+        else:
+            gpu_hotspot_delta = None
+            gpu_status = "Unavailable (measured hotspot sensor required)"
 
         # 3. Storage Lifespan Projection
         sh = storage_health or {}
@@ -173,11 +185,15 @@ class PredictiveEngine:
         # 4. Generate Targeted Maintenance Recommendations
         recs = []
         if cooling_eff < 75.0:
+        if cooling_eff is None:
+            recs.append("Cooling assessment unavailable; measured temperature and sustained package power are required.")
+        elif cooling_eff < 75.0:
             recs.append("Cooling efficiency is below the reference range. Check the cooler, airflow, and manufacturer guidance.")
         else:
             recs.append("Thermal resistance is within the generic cooling reference range; actual limits depend on the cooler.")
 
         if gpu_hotspot_delta > GPU_HOTSPOT_WARNING_DELTA:
+        if gpu_hotspot_delta is not None and gpu_hotspot_delta > GPU_HOTSPOT_WARNING_DELTA:
             recs.append("GPU hotspot spread is elevated; compare against the GPU manufacturer's limits and monitor under load.")
 
         if wear_pct is None:
@@ -192,6 +208,10 @@ class PredictiveEngine:
 
         # 5. Formulate Diagnostic Advisory
         if cooling_eff >= 90.0 and gpu_hotspot_delta <= GPU_HOTSPOT_NOMINAL_DELTA + 3.0 and wear_pct is not None:
+        if cooling_eff is None:
+            advisory = "Cooling reference unavailable: measured temperature and sustained package power required. "
+            advisory += "Storage SMART wear data is unavailable." if wear_pct is None else "Storage lifespan uses generic assumptions."
+        elif cooling_eff >= 90.0 and gpu_hotspot_delta is not None and gpu_hotspot_delta <= GPU_HOTSPOT_NOMINAL_DELTA + 3.0 and wear_pct is not None:
             advisory = (
                 f"Thermal readings are within generic reference ranges ({cooling_eff}% reference efficiency, "
                 f"θ = {theta:.2f}°C/W). GPU hotspot spread is within the reference range. "

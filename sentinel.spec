@@ -3,6 +3,8 @@
 sentinel.spec - PyInstaller Build Specification for Sentinel AI.
 Packages Sentinel AI into a standalone, production-ready Windows executable.
 """
+from PyInstaller.utils.hooks import collect_all
+from importlib.util import find_spec
 from pathlib import Path
 import os
 import sys
@@ -74,10 +76,17 @@ hiddenimports = [
     'ui.theme',
 ]
 
+compute_binaries = []
+if find_spec('pyopencl'):
+    extra_data, extra_binaries, extra_imports = collect_all('pyopencl')
+    datas += extra_data
+    compute_binaries += extra_binaries
+    hiddenimports += extra_imports
+
 a = Analysis(
     ['app.py'],
     pathex=[str(PROJECT_ROOT)],
-    binaries=[],
+    binaries=compute_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

@@ -53,6 +53,8 @@ def calculate_health_score(metrics: dict) -> dict:
 
     # 1. Thermal Sub-Score (40% Weight)
     cpu_temp = float(cpu.get("temperature", 0.0) or 0.0)
+    if cpu.get("is_estimated_temp"):
+        cpu_temp = 0.0
     gpu_temp = float(gpu.get("temperature", 0.0) or 0.0) if gpu.get("available") else 0.0
 
     gpu_thermal = _calc_gpu_thermal_score(gpu_temp) if gpu_temp > 0 else None
@@ -109,6 +111,7 @@ def calculate_health_score(metrics: dict) -> dict:
         "total_score": total_score,
         "status": status,
         "color": color,
+        "thermal_complete": bool(cpu_temp > 0 and (not gpu.get("available") or gpu_temp > 0)),
         "thermal_score": round(thermal_score, 1),
         "memory_storage_score": round(memory_storage_score, 1),
         "headroom_score": round(headroom_score, 1),

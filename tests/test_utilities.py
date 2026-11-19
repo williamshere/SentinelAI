@@ -31,8 +31,8 @@ class TestUtilities(unittest.TestCase):
     @patch("os.name", "posix")
     def test_clean_ram_posix_fallback(self):
         success, msg, freed = clean_ram()
-        self.assertTrue(success)
-        self.assertIn("simulated", msg)
+        self.assertFalse(success)
+        self.assertIn("requires Windows", msg)
         self.assertEqual(freed, 0.0)
 
     @patch("os.name", "posix")

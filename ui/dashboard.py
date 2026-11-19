@@ -7,6 +7,7 @@ import csv
 import sys
 import time
 import threading
+import copy
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -140,6 +141,9 @@ from sensors.disk import get_disk_info
 from sensors.gpu import get_gpu_info
 from sensors.ram import get_ram_info
 from ui.alert_manager import AlertManager, AlertState
+from core.settings import load_settings
+from ui.preferences import PreferencesWidget
+from ui.stress_lab import StressLab
 from database.manager import HISTORY_METRIC_COLUMNS
 from ui.chart_widget import HistoryChartWidget, TelemetryChartWidget
 
@@ -267,24 +271,29 @@ class TelemetryWorker(QThread):
 
     def run(self):
         last_db_write = 0.0
+        last_storage = 0.0
+        storage = {"available": False}
         while not self._stop_event.is_set():
-            now = time.time()
-            cpu = get_cpu_info()
-            ram = get_ram_info()
-            disk = get_disk_info()
-            gpu = get_gpu_info()
-            try:
-                from sensors.network import get_network_info
-                net = get_network_info()
-            except ImportError:
-                net = {"available": False}
-            try:
-                from sensors.processes import get_process_info
-                processes = get_process_info()
-            except ImportError:
-                processes = {"available": False, "processes": []}
+            now = time.monotonic()
+            def read_sensor(reader):
+                try:
+                    return reader()
+                except Exception as exc:
+                    return {"available": False, "error": str(exc)}
+            cpu = read_sensor(get_cpu_info)
+            ram = read_sensor(get_ram_info)
+            disk = read_sensor(get_disk_info)
+            gpu = read_sensor(get_gpu_info)
+            from sensors.network import get_network_info
+            from sensors.processes import get_process_info
+            net = read_sensor(get_network_info)
+            processes = read_sensor(get_process_info)
+            if now - last_storage >= 120 or not last_storage:
+                storage = read_sensor(lambda: get_storage_health(drive_letter="C:"))
+                last_storage = now
 
             payload = {
+                "storage_health": storage,
                 "cpu": cpu,
                 "ram": ram,
                 "disk": disk,
@@ -311,6 +320,20 @@ class TelemetryWorker(QThread):
         self.wait()
 
 
+class ActionWorker(QThread):
+    result_ready = Signal(object)
+
+    def __init__(self, action, parent):
+        super().__init__(parent)
+        self.action = action
+
+    def run(self):
+        try:
+            self.result_ready.emit(self.action())
+        except Exception as exc:
+            self.result_ready.emit((False, str(exc)))
+
+
 class SentinelDashboard(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -325,6 +348,10 @@ class SentinelDashboard(QMainWindow):
         self.resize(1400, 920)
         self.setStyleSheet("background-color: #08111e; color: #eaf1ff;")
 
+        self._actions = []
+        self.preferences = load_settings()
+        THRESHOLDS.update(self.preferences["thresholds"])
+
         # Initialize Database and Alert Managers
         self.db_manager = DatabaseManager()
         self._is_quitting = False
@@ -337,7 +364,12 @@ class SentinelDashboard(QMainWindow):
         )
         self.predictive_engine = PredictiveEngine(ambient_c=24.0)
         self.chat_engine = ChatEngine()
+        self.chat_watchdog = QTimer(self)
+        self.chat_watchdog.setSingleShot(True)
+        self.chat_watchdog.timeout.connect(self._on_chat_timeout)
         self.chat_worker = None
+        self._chat_workers = set()
+        self._chat_history_generation = 0
         self._chat_busy = False
 
         self.driver_manager = DriverManager()
@@ -391,6 +423,7 @@ class SentinelDashboard(QMainWindow):
         self.settings_view = self._create_settings_view()
         self.history_view = self._create_history_view()
         self.processes_view = self._create_processes_view()
+        self.stress_lab = StressLab(self.preferences)
 
         self.stack.addWidget(self.overview_view)   # Index 0
         self.stack.addWidget(self.threats_view)    # Index 1
@@ -401,11 +434,15 @@ class SentinelDashboard(QMainWindow):
         self.stack.addWidget(self.history_view)    # Index 6
         self.stack.addWidget(self.processes_view)  # Index 7
 
+        self.stack.addWidget(self.stress_lab)       # Index 8
         main_layout.addWidget(self.stack, 1)
 
         # Start Telemetry Worker Thread
         self.worker = TelemetryWorker(db_manager=self.db_manager)
+        self.worker.poll_interval = self.preferences["refresh_ms"] / 1000
+        self.worker.db_interval = self.preferences["snapshot_ms"] / 1000
         self.worker.metrics_ready.connect(self.handle_metrics_update)
+        self.stress_lab.active_changed.connect(self._on_stress_active)
         self.worker.start()
 
         # Initialize System Tray Icon and Windows Toast Notification Bindings
@@ -480,6 +517,7 @@ class SentinelDashboard(QMainWindow):
             ("⚙️  Settings", 5),
             ("📈  History", 6),
             ("⚙️  Processes", 7),
+            ("⚡  Compute Lab", 8),
         ]
 
         self.nav_buttons = []
@@ -610,7 +648,7 @@ class SentinelDashboard(QMainWindow):
         top_bar.addWidget(self.header, 1)
 
         # Dynamic Weighted Health Score Badge
-        self.system_health = QLabel("Health: 100/100 (Optimal)")
+        self.system_health = QLabel("Health: waiting for telemetry")
         self.system_health.setStyleSheet("font-size: 13px; font-weight: 600; color: #34d399; padding-right: 10px;")
         top_bar.addWidget(self.system_health, 0, Qt.AlignRight)
         content_layout.addLayout(top_bar)
@@ -632,7 +670,8 @@ class SentinelDashboard(QMainWindow):
         banner_layout = QHBoxLayout(self.sensor_warning_banner)
         banner_layout.setContentsMargins(6, 4, 6, 4)
         
-        lbl_banner = QLabel("⚠️ Limited Sensor Access: Run Sentinel AI as Administrator to enable low-level Intel Core CPU temperature and fan telemetry via LibreHardwareMonitor.")
+        lbl_banner = QLabel("⚠️ CPU temperature is estimated or unavailable. On Windows, a running LibreHardwareMonitor instance and administrator access may provide measurements.")
+        lbl_banner.setWordWrap(True)
         lbl_banner.setStyleSheet("color: #fbbf24; font-size: 12px; font-weight: 600;")
         banner_layout.addWidget(lbl_banner, 1)
 
@@ -716,18 +755,13 @@ class SentinelDashboard(QMainWindow):
             QPushButton:hover { background-color: #0284c7; color: #ffffff; }
         """)
         def on_clean_ram_clicked():
-            try:
-                from core.utilities import clean_ram
-                ok, msg, freed = clean_ram()
-                self.status.setText(f"Utility: {msg}")
-                self.send_toast_notification("RAM Optimized", msg, QSystemTrayIcon.MessageIcon.Information)
-            except Exception as e:
-                self.status.setText(f"RAM optimization error: {e}")
+            from core.utilities import clean_ram
+            self._run_action(btn_ram_clean, clean_ram, lambda result: self.status.setText(f"Utility: {result[1]}"))
         btn_ram_clean.clicked.connect(on_clean_ram_clicked)
         util_layout.addWidget(btn_ram_clean)
 
         btn_disk_clean = QPushButton("🗑️ Clean Temp Files")
-        btn_disk_clean.setToolTip("Safely prune temporary cache and scratch files.")
+        btn_disk_clean.setToolTip("Delete only regular files older than 24 hours from the temp directory; skip folders and links.")
         btn_disk_clean.setCursor(Qt.PointingHandCursor)
         btn_disk_clean.setStyleSheet("""
             QPushButton {
@@ -742,13 +776,8 @@ class SentinelDashboard(QMainWindow):
             QPushButton:hover { background-color: #db2777; color: #ffffff; }
         """)
         def on_clean_disk_clicked():
-            try:
-                from core.utilities import clean_disk_temp
-                ok, msg, freed = clean_disk_temp()
-                self.status.setText(f"Utility: {msg}")
-                self.send_toast_notification("Disk Cleaned", msg, QSystemTrayIcon.MessageIcon.Information)
-            except Exception as e:
-                self.status.setText(f"Disk cleanup error: {e}")
+            from core.utilities import clean_disk_temp
+            self._run_action(btn_disk_clean, clean_disk_temp, lambda result: self.status.setText(f"Utility: {result[1]}"))
         btn_disk_clean.clicked.connect(on_clean_disk_clicked)
         util_layout.addWidget(btn_disk_clean)
 
@@ -812,7 +841,7 @@ class SentinelDashboard(QMainWindow):
         content_layout.addWidget(utilities_bar)
 
         # 2. Performance History Chart
-        self.chart = TelemetryChartWidget(title="Performance History (Trailing 60s)", max_points=60)
+        self.chart = TelemetryChartWidget(title="Performance History (Latest 60 samples)", max_points=60)
         recent_history = self.db_manager.get_recent_metrics(minutes=15)
         self.chart.load_history(recent_history)
         content_layout.addWidget(self.chart)
@@ -902,7 +931,11 @@ class SentinelDashboard(QMainWindow):
         self.status.setStyleSheet("font-size: 14px; color: #5eead4; padding-top: 4px;")
         content_layout.addWidget(self.status)
 
-        return view
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(view)
+        return scroll
 
     def _create_threats_view(self) -> QWidget:
         """View 1: Threat Detection & AI Diagnostics."""
@@ -1061,9 +1094,8 @@ class SentinelDashboard(QMainWindow):
             QPushButton:hover { background-color: #0369a1; }
         """)
         def on_pnp_scan():
-            ok, msg = self.driver_manager.scan_for_hardware_changes()
-            self.status.setText(f"Driver Manager: {msg}")
-            self.send_toast_notification("Hardware Scan", msg, QSystemTrayIcon.MessageIcon.Information)
+            self._run_action(btn_pnp, self.driver_manager.scan_for_hardware_changes,
+                             lambda result: info_lbl.setText(result[1]))
         btn_pnp.clicked.connect(on_pnp_scan)
         h_row.addWidget(btn_pnp)
 
@@ -1073,13 +1105,16 @@ class SentinelDashboard(QMainWindow):
             QPushButton { background-color: #1e293b; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 6px 14px; font-size: 12px; }
             QPushButton:hover { background-color: #334155; color: white; }
         """)
-        btn_devmgmt.clicked.connect(lambda: self.driver_manager.launch_device_manager())
+        def open_device_manager():
+            ok = self.driver_manager.launch_device_manager()
+            info_lbl.setText("Device Manager opened." if ok else "Device Manager is unavailable on this host or failed to open.")
+        btn_devmgmt.clicked.connect(open_device_manager)
         h_row.addWidget(btn_devmgmt)
         d_layout.addLayout(h_row)
 
         # Drivers Table
         table = QTableWidget()
-        drivers = self.driver_manager.scan_drivers()
+        drivers = []
         table.setColumnCount(5)
         table.setHorizontalHeaderLabels(["Device Name", "Category", "Version", "Driver Date", "Status"])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -1089,14 +1124,13 @@ class SentinelDashboard(QMainWindow):
         table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         table.setRowCount(len(drivers))
 
-        for row, drv in enumerate(drivers):
-            table.setItem(row, 0, QTableWidgetItem(drv.get("device_name", "")))
-            table.setItem(row, 1, QTableWidgetItem(drv.get("category", "")))
-            table.setItem(row, 2, QTableWidgetItem(drv.get("version", "")))
-            table.setItem(row, 3, QTableWidgetItem(drv.get("driver_date", "")))
-            status_item = QTableWidgetItem(drv.get("status", "Nominal"))
-            status_item.setForeground(QColor("#34d399"))
-            table.setItem(row, 4, status_item)
+        def show_drivers(result):
+            drivers = result if isinstance(result, list) else []
+            table.setRowCount(len(drivers))
+            for row, drv in enumerate(drivers):
+                for col, key in enumerate(("device_name", "category", "version", "driver_date", "status")):
+                    table.setItem(row, col, QTableWidgetItem(drv.get(key, "")))
+            info_lbl.setText(f"Discovered drivers: {len(drivers)}" if drivers else "Driver inventory unavailable. Requires Windows and working CIM providers.")
 
         d_layout.addWidget(table, 1)
 
@@ -1113,6 +1147,7 @@ class SentinelDashboard(QMainWindow):
         f_row.addWidget(btn_close)
         d_layout.addLayout(f_row)
 
+        self._run_action(btn_devmgmt, self.driver_manager.scan_drivers, show_drivers)
         dlg.exec()
 
     def _run_diagnostics(self):
@@ -1707,18 +1742,23 @@ class SentinelDashboard(QMainWindow):
             )
 
             # 2. Spawn ChatWorker in background QThread
+            # A request owns its own conversation snapshot. Timed-out workers
+            # can finish safely without mutating a later request's history.
+            request_engine = copy.copy(self.chat_engine)
+            request_engine.history = [turn.copy() for turn in self.chat_engine.history]
             self.chat_worker = ChatWorker(
-                chat_engine=self.chat_engine,
+                chat_engine=request_engine,
                 user_message=query,
                 system_context=system_context,
             )
+            self.chat_worker.history_generation = self._chat_history_generation
+            self._chat_workers.add(self.chat_worker)
             self.chat_worker.response_ready.connect(self._on_chat_response_ready)
+            self.chat_worker.finished.connect(self._on_chat_finished)
             self.chat_worker.start()
 
-            # 3. UI Watchdog Timer: guarantee input recovery if local inference
-            #    runs longer than CHAT_WATCHDOG_SECONDS.  The worker thread is
-            #    left alone; only the input widgets are re-enabled.
-            QTimer.singleShot(CHAT_WATCHDOG_SECONDS * 1000, self._on_chat_timeout)
+            # Restore input after the configured timeout while retaining the worker.
+            self.chat_watchdog.start(CHAT_WATCHDOG_SECONDS * 1000)
         except Exception as e:
             self._chat_busy = False
             self.btn_chat_send.setEnabled(True)
@@ -1733,39 +1773,53 @@ class SentinelDashboard(QMainWindow):
             )
 
     def _on_chat_timeout(self):
-        """Watchdog callback to re-enable UI if inference hangs or takes too long."""
+        """Restore input while a slow worker finishes with an isolated history."""
+        if not self._chat_busy:
+            return
         self._chat_busy = False
-        if hasattr(self, "btn_chat_send") and not self.btn_chat_send.isEnabled():
-            self.btn_chat_send.setEnabled(True)
-            self.btn_chat_send.setText("Send 🚀")
-            self.chat_input.setEnabled(True)
-            self.chat_input.setFocus()
-            self._append_chat_bubble(
-                "assistant",
-                f"⚠️ Local inference timed out after {CHAT_WATCHDOG_SECONDS} seconds.\n\n"
-                "• Ensure LM Studio has 'Start Server' toggled ON under the Local Server (<->) tab.\n"
-                "• Verify port 1234 is active and Gemma 2 is loaded with GPU offloading.",
-                source="Sentinel Watchdog",
-                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            )
-
-    def _on_chat_response_ready(self, response: dict):
-        """Receives assistant response from worker thread and displays it in chat."""
-        self._chat_busy = False
-        content = response.get("content", "Diagnostic analysis completed.")
-        source = response.get("source", "Sentinel Core")
-        timestamp = response.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-        self._append_chat_bubble("assistant", content, source=source, timestamp=timestamp)
-
-        # Re-enable inputs
+        self.chat_worker = None
         self.btn_chat_send.setEnabled(True)
         self.btn_chat_send.setText("Send 🚀")
         self.chat_input.setEnabled(True)
         self.chat_input.setFocus()
+        self._append_chat_bubble(
+            "assistant",
+            f"⚠️ Local inference timed out after {CHAT_WATCHDOG_SECONDS} seconds.\n\n"
+            "• Ensure LM Studio has 'Start Server' toggled ON under the Local Server (<->) tab.\n"
+            "• Verify port 1234 is active and Gemma 2 is loaded with GPU offloading.",
+            source="Sentinel Watchdog",
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    def _on_chat_finished(self):
+        worker = self.sender()
+        self._chat_workers.discard(worker)
+        if worker is self.chat_worker:
+            self.chat_watchdog.stop()
+            self._chat_busy = False
+            self.chat_worker = None
+            self.btn_chat_send.setEnabled(True)
+            self.btn_chat_send.setText("Send 🚀")
+            self.chat_input.setEnabled(True)
+        if worker is not None:
+            worker.deleteLater()
+
+    def _on_chat_response_ready(self, response: dict):
+        """Display only the active request; late timed-out results are ignored."""
+        worker = self.sender()
+        if worker is not self.chat_worker or worker is None:
+            return
+        self.chat_watchdog.stop()
+        if worker.history_generation == self._chat_history_generation:
+            self.chat_engine.history = [turn.copy() for turn in worker.chat_engine.history]
+        content = response.get("content", "Diagnostic analysis completed.")
+        source = response.get("source", "Sentinel Core")
+        timestamp = response.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        self._append_chat_bubble("assistant", content, source=source, timestamp=timestamp)
 
     def _clear_chat_history(self):
         """Clears conversational history and resets chat layout."""
+        self._chat_history_generation += 1
         if hasattr(self, "chat_engine"):
             self.chat_engine.clear_history()
 
@@ -1863,6 +1917,7 @@ class SentinelDashboard(QMainWindow):
             card_layout.setSpacing(12)
 
             title_lbl = QLabel(f"{icon}  {title}")
+            title_lbl.setWordWrap(True)
             title_lbl.setStyleSheet("font-size: 15px; font-weight: 700; color: #f8fafc; border-bottom: 1px solid #1e293b; padding-bottom: 8px;")
             card_layout.addWidget(title_lbl)
 
@@ -1878,10 +1933,12 @@ class SentinelDashboard(QMainWindow):
 
         def add_row(grid: QGridLayout, row: int, label_text: str, val_text: str, val_color: str = "#38bdf8", is_badge: bool = False) -> QLabel:
             lbl = QLabel(label_text)
+            lbl.setWordWrap(True)
             lbl.setStyleSheet("font-size: 13px; color: #94a3b8; font-weight: 500; border: none; background: transparent;")
             lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
             val = QLabel(val_text)
+            val.setWordWrap(True)
             if is_badge:
                 val.setStyleSheet(f"font-size: 12px; color: {val_color}; font-weight: 600; background-color: rgba(30, 41, 59, 200); border: 1px solid #334155; border-radius: 4px; padding: 2px 8px;")
             else:
@@ -1908,52 +1965,22 @@ class SentinelDashboard(QMainWindow):
         temp_avail = self.latest_metrics.get("cpu", {}).get("temp_available", False)
         self.settings_cpu_driver_val = add_row(
             grid_sys, 1, "CPU Thermal Driver:",
-            "Active (LibreHardwareMonitor)" if temp_avail else "Elevation Required (Run as Admin)",
+            "Active (LibreHardwareMonitor)" if temp_avail else "Temperature sensor unavailable",
             val_color="#34d399" if temp_avail else "#f59e0b",
             is_badge=True
         )
         is_wmi_pwr = self.latest_metrics.get("cpu", {}).get("power_source") == "wmi_lhm_power"
         self.settings_cpu_power_val = add_row(
             grid_sys, 2, "CPU Power Telemetry:",
-            "WMI LHM Sensor" if is_wmi_pwr else "Dynamic TDP (i7-12700)",
+            "WMI LHM Sensor" if is_wmi_pwr else "Estimated TDP (hardware-specific model)",
             val_color="#38bdf8"
         )
         add_row(grid_sys, 3, "Hardware profile:", "Detected telemetry + optional config.py overrides", val_color="#e2e8f0")
         grid_top.addWidget(card_sys, 0, 0)
 
-        # --- Refresh Rate Setting ---
-        card_refresh, grid_refresh = create_card("card_refresh", "Performance Tunables", "⏱️")
-
-        self.combo_refresh = QComboBox()
-        self.combo_refresh.addItems(["Fast (1s)", "Standard (2s)", "Relaxed (5s)", "Background (10s)"])
-        self.combo_refresh.setCurrentText("Standard (2s)")
-        self.combo_refresh.setStyleSheet("""
-            QComboBox { background-color: #1e293b; color: #cbd5e1; border: 1px solid #334155; border-radius: 4px; padding: 4px; }
-            QComboBox::drop-down { border: none; }
-        """)
-
-        def on_refresh_changed(text):
-            try:
-                import config
-                ms = 2000
-                if "1s" in text: ms = 1000
-                elif "5s" in text: ms = 5000
-                elif "10s" in text: ms = 10000
-                config.UI_REFRESH_INTERVAL_MS = ms
-                if hasattr(self, "worker"):
-                    self.worker.poll_interval = ms / 1000.0
-                self.send_toast_notification("Settings Saved", f"Refresh interval set to {text}.", QSystemTrayIcon.MessageIcon.Information)
-            except Exception as e:
-                pass
-
-        self.combo_refresh.currentTextChanged.connect(on_refresh_changed)
-
-        lbl_refresh = QLabel("UI Polling Interval:")
-        lbl_refresh.setStyleSheet("font-size: 13px; color: #94a3b8; font-weight: 500; border: none; background: transparent;")
-        grid_refresh.addWidget(lbl_refresh, 0, 0)
-        grid_refresh.addWidget(self.combo_refresh, 0, 1)
-
-        layout.addWidget(card_refresh)
+        self.preferences_widget = PreferencesWidget(self.preferences)
+        self.preferences_widget.applied.connect(self._apply_preferences)
+        layout.addWidget(self.preferences_widget)
 
         # 2. Local AI Engine & Diagnostics Card
         card_ai, grid_ai = create_card("cardAiEngine", "Local AI Engine & Triage", "🧠")
@@ -1971,8 +1998,8 @@ class SentinelDashboard(QMainWindow):
 
         # 3. Telemetry & Database Card
         card_db, grid_db = create_card("cardTelemetryDb", "Telemetry & Snapshot Retention", "⏱️")
-        add_row(grid_db, 0, "UI Refresh Interval:", f"{UI_REFRESH_INTERVAL_MS} ms ({UI_REFRESH_INTERVAL_MS / 1000:.1f}s real-time)", val_color="#38bdf8")
-        add_row(grid_db, 1, "DB Snapshot Interval:", f"{DB_LOG_INTERVAL_MS} ms ({DB_LOG_INTERVAL_MS / 1000:.1f}s persist)", val_color="#38bdf8")
+        self.settings_refresh_val = add_row(grid_db, 0, "UI Refresh Interval:", f"{self.preferences['refresh_ms']} ms", val_color="#38bdf8")
+        self.settings_snapshot_val = add_row(grid_db, 1, "DB Snapshot Interval:", f"{self.preferences['snapshot_ms']} ms", val_color="#38bdf8")
         add_row(grid_db, 2, "Alert Debounce Window:", f"{ALERT_DEBOUNCE_SECONDS} seconds", val_color="#93c5fd")
         add_row(grid_db, 3, "Database Path:", str(DATABASE_PATH), val_color="#cbd5e1")
         add_row(grid_db, 4, "Snapshot Retention:", "7 days (auto-pruned on startup)", val_color="#94a3b8")
@@ -1980,11 +2007,11 @@ class SentinelDashboard(QMainWindow):
 
         # 4. Sensor Alert Thresholds Card
         card_thresh, grid_thresh = create_card("cardAlertThresh", "Sensor Alert Thresholds", "🚨")
-        add_row(grid_thresh, 0, "CPU Usage (Warn / Crit):", f"{THRESHOLDS.get('cpu_high')} / {THRESHOLDS.get('cpu_critical')}%", val_color="#f87171")
-        add_row(grid_thresh, 1, "RAM Usage (Warn / Crit):", f"{THRESHOLDS.get('ram_high')} / {THRESHOLDS.get('ram_critical')}%", val_color="#fb923c")
-        add_row(grid_thresh, 2, "Disk Usage (Warn / Crit):", f"{THRESHOLDS.get('disk_high')} / {THRESHOLDS.get('disk_critical')}%", val_color="#fbbf24")
-        add_row(grid_thresh, 3, "GPU Temp (Warn / Crit):", f"{THRESHOLDS.get('gpu_temp_high')} / {THRESHOLDS.get('gpu_temp_critical')}°C", val_color="#f43f5e")
-        add_row(grid_thresh, 4, "GPU Usage Threshold:", f"{THRESHOLDS.get('gpu_usage_high')}%", val_color="#38bdf8")
+        add_row(grid_thresh, 0, "Editable controls:", "CPU, RAM, disk and GPU temperature above", val_color="#38bdf8")
+        add_row(grid_thresh, 1, "Validation:", "Warning must be below critical", val_color="#93c5fd")
+        add_row(grid_thresh, 2, "Apply behavior:", "Saved locally; applied immediately", val_color="#34d399")
+        add_row(grid_thresh, 3, "CPU thermal alerts:", "Measured temperatures only (80°C / 90°C)", val_color="#fbbf24")
+        add_row(grid_thresh, 4, "GPU usage threshold:", f"{THRESHOLDS.get('gpu_usage_high')}%", val_color="#38bdf8")
         grid_mid.addWidget(card_thresh, 0, 1)
 
         layout.addLayout(grid_mid)
@@ -2017,6 +2044,7 @@ class SentinelDashboard(QMainWindow):
         ctrl_title = QLabel("🚀  Windows Startup Launch")
         ctrl_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #f8fafc;")
         ctrl_desc = QLabel("Automatically launch Sentinel AI minimized to system tray upon Windows login.")
+        ctrl_desc.setWordWrap(True)
         ctrl_desc.setStyleSheet("font-size: 13px; color: #8ba0bd;")
         self.settings_autostart_status = QLabel(
             "Status: Enabled (Minimized to Tray on Boot)" if is_autostart_enabled() else "Status: Disabled (Manual Launch Only)"
@@ -2127,6 +2155,34 @@ class SentinelDashboard(QMainWindow):
 
         scroll.setWidget(container)
         return scroll
+
+    def _run_action(self, button, action, callback):
+        button.setEnabled(False)
+        worker = ActionWorker(action, self)
+        self._actions.append(worker)
+        worker.result_ready.connect(callback)
+        def finished():
+            button.setEnabled(True)
+            self._actions.remove(worker)
+            worker.deleteLater()
+        worker.finished.connect(finished)
+        worker.start()
+
+    def _on_stress_active(self, active):
+        from sensors.cpu import set_fast_poll
+        set_fast_poll(active)
+        self.worker.poll_interval = 1.0 if active else self.preferences["refresh_ms"] / 1000
+
+    def _apply_preferences(self, settings):
+        self.preferences = settings
+        THRESHOLDS.update(settings["thresholds"])
+        self.settings_refresh_val.setText(f"{settings['refresh_ms']} ms (1s during compute tests)")
+        self.settings_snapshot_val.setText(f"{settings['snapshot_ms']} ms")
+        if hasattr(self, "worker"):
+            self.worker.poll_interval = 1.0 if self.stress_lab.running else settings["refresh_ms"] / 1000
+            self.worker.db_interval = settings["snapshot_ms"] / 1000
+        if hasattr(self, "stress_lab"):
+            self.stress_lab.apply_settings(settings)
 
     def _create_tray_icon(self) -> QIcon:
         """Load app icon or dynamically generate an antialiased high-contrast shield icon."""
@@ -2247,8 +2303,8 @@ class SentinelDashboard(QMainWindow):
     def _force_exit(self):
         """Completely terminates Sentinel AI and background polling threads."""
         self._is_quitting = True
-        self.close()
-        QApplication.quit()
+        if self.close():
+            QApplication.quit()
 
     def changeEvent(self, event):
         """Intercept minimize event to tuck application silently into system tray."""
@@ -2261,6 +2317,7 @@ class SentinelDashboard(QMainWindow):
 
     def closeEvent(self, event):
         """Minimize to system tray on window close, keeping background telemetry running."""
+        self.stress_lab.stop("Stopped on window close")
         if hasattr(self, "tray_icon") and self.tray_icon and self.tray_icon.isVisible() and not self._is_quitting:
             self.hide()
             if not self._tray_notice_shown:
@@ -2273,6 +2330,8 @@ class SentinelDashboard(QMainWindow):
             event.ignore()
         else:
             self.worker.stop()
+            for action in list(self._actions):
+                action.wait()
             # Shut down background inference workers.  Neither worker runs a Qt
             # event loop, so quit() is a no-op for them — request abort, drop
             # the result signals so nothing lands on torn-down slots, then wait
@@ -2287,12 +2346,20 @@ class SentinelDashboard(QMainWindow):
                 except Exception:
                     pass
                 self.diag_worker.wait(3000)
-            if self.chat_worker and self.chat_worker.isRunning():
-                try:
-                    self.chat_worker.response_ready.disconnect(self._on_chat_response_ready)
-                except Exception:
-                    pass
-                self.chat_worker.wait(3000)
+            # Retain every timed-out worker until it exits; QThread destruction
+            # while running can abort the process.
+            for chat_worker in list(self._chat_workers):
+                if chat_worker.isRunning():
+                    chat_worker.wait(100)
+            if (self.diag_worker and self.diag_worker.isRunning()) or any(
+                worker.isRunning() for worker in self._chat_workers
+            ):
+                # Keep Python/Qt owners alive until finite inference calls return.
+                # Destroying a running QThread can abort the entire process.
+                self._is_quitting = True
+                event.ignore()
+                QTimer.singleShot(200, self._force_exit)
+                return
             event.accept()
 
     def push_alert(self, alert_key: str, text: str, severity: str = "info"):
@@ -2409,7 +2476,7 @@ class SentinelDashboard(QMainWindow):
             health = calculate_health_score(data)
             self.latest_health = health
             if update_widgets and hasattr(self, "system_health"):
-                self.system_health.setText(f"Health: {health['total_score']}/100 ({health['status']})")
+                self.system_health.setText(f"Health: {health['total_score']}/100 ({health['status']})" + (" • thermals incomplete" if not health["thermal_complete"] else ""))
                 self.system_health.setStyleSheet(
                     f"font-size: 13px; font-weight: 600; color: {health['color']}; padding-right: 10px;"
                 )
@@ -2422,7 +2489,7 @@ class SentinelDashboard(QMainWindow):
             ("cpu", cpu_usage, THRESHOLDS.get("cpu_high", 80.0), THRESHOLDS.get("cpu_critical", 90.0)),
             ("ram", ram_pct, THRESHOLDS.get("ram_high", 80.0), THRESHOLDS.get("ram_critical", 90.0)),
         ]
-        if cpu_temp > 0:
+        if cpu_temp > 0 and cpu.get("temp_available") and not cpu.get("is_estimated_temp"):
             evaluations.append((
                 "cpu_temp",
                 cpu_temp,
@@ -2467,14 +2534,9 @@ class SentinelDashboard(QMainWindow):
             if self.game_mode_mgr.is_active:
                 self.game_mode_mgr.sample_telemetry(data)
 
-        # Periodic storage SMART reliability cache (debounced every 120 seconds)
-        now_ts = time.time()
-        if (now_ts - self._last_storage_check_time) > 120.0:
-            self._last_storage_check_time = now_ts  # Immediately debounce before query
-            try:
-                self._last_storage_health = get_storage_health(drive_letter="C:")
-            except Exception:
-                pass
+        # Slow SMART reads run on the telemetry thread, never the Qt event loop.
+        self._last_storage_health = data.get("storage_health", self._last_storage_health)
+        self.stress_lab.update_metrics(data)
 
         self._evaluate_alerts_and_health(data, update_widgets=window_visible)
 
@@ -2490,11 +2552,11 @@ class SentinelDashboard(QMainWindow):
             temp_avail = data.get("cpu", {}).get("temp_available", False)
             is_estimated = data.get("cpu", {}).get("is_estimated_temp", False)
             if temp_avail and not is_estimated:
-                driver_status = "Active (LibreHardwareMonitor)"
+                driver_status = f"Measured ({data.get('cpu', {}).get('temp_source', 'sensor')})"
             elif is_estimated:
-                driver_status = "Calibrated Thermal Model (Run as Admin for WMI)"
+                driver_status = "Estimated • hardware-specific model"
             else:
-                driver_status = "Elevation Required (Run as Admin)"
+                driver_status = "Temperature sensor unavailable"
             self.settings_cpu_driver_val.setText(driver_status)
             self.settings_cpu_driver_val.setStyleSheet(
                 "font-size: 12px; color: #34d399; font-weight: 600; background-color: rgba(30, 41, 59, 200); border: 1px solid #334155; border-radius: 4px; padding: 2px 8px;"
@@ -2508,6 +2570,10 @@ class SentinelDashboard(QMainWindow):
                 pa = self.predictive_engine.evaluate_system(data, self._last_storage_health)
                 c_text = f"🌊 Cooling Reference Efficiency: {pa.cooling_efficiency_percent}%\nθ = {pa.cpu_thermal_resistance:.3f} °C/W • {pa.cpu_health_status}"
                 h_text = f"🔥 GPU Hotspot Spread: +{pa.gpu_hotspot_delta:.1f}°C\n{pa.gpu_contact_status}"
+                c_text = (f"Cooling reference: {pa.cooling_efficiency_percent}%\nθ = {pa.cpu_thermal_resistance:.3f} °C/W • {pa.cpu_health_status}"
+                          if pa.cooling_efficiency_percent is not None else "Cooling assessment unavailable\nMeasured temperature and sustained power required")
+                h_text = (f"GPU hotspot spread: +{pa.gpu_hotspot_delta:.1f}°C\n{pa.gpu_contact_status}"
+                          if pa.gpu_hotspot_delta is not None else "GPU hotspot unavailable\nMeasured hotspot sensor required")
                 health_text = f"{pa.ssd_health_percent:.1f}%" if pa.ssd_health_percent is not None else "Unavailable"
                 years_text = (
                     f"~{pa.ssd_estimated_years_remaining:.1f} years (rough)"
@@ -2554,7 +2620,8 @@ class SentinelDashboard(QMainWindow):
         else:
             temp_str = ""
 
-        power_str = f" • {cpu_power:.0f}W" if cpu_power > 0 else ""
+        power_est = "~" if str(cpu.get("power_source", "")).startswith("estimated") else ""
+        power_str = f" • {power_est}{cpu_power:.0f}W" if cpu_power > 0 else ""
         self.cards["CPU"].set_value(
             f"Usage: {cpu_usage:.1f}%\nFreq: {cpu_freq:.0f} MHz{temp_str}{power_str}",
             cpu_usage,

@@ -11,6 +11,13 @@ try:
 except ImportError:
     WMI_SENSOR_INTERVAL_SECONDS = 15.0
 
+_fast_poll = False
+
+def set_fast_poll(enabled: bool):
+    global _fast_poll
+    _fast_poll = enabled
+
+
 _last_wmi_retry = 0.0
 _wmi_available = None
 _wmi_sensor_cache = {"timestamp": 0.0, "temperature": 0.0, "power_watts": 0.0, "source": "unavailable"}
@@ -45,7 +52,7 @@ def _read_wmi_cpu_sensors() -> dict:
     """
     global _last_wmi_retry, _wmi_available, _wmi_sensor_cache
     now = time.monotonic()
-    if now - _wmi_sensor_cache["timestamp"] < WMI_SENSOR_INTERVAL_SECONDS:
+    if now - _wmi_sensor_cache["timestamp"] < (1.0 if _fast_poll else WMI_SENSOR_INTERVAL_SECONDS):
         return _wmi_sensor_cache
 
     _wmi_sensor_cache = {"timestamp": now, "temperature": 0.0, "power_watts": 0.0, "source": "unavailable"}
@@ -123,21 +130,13 @@ def _get_cpu_temperature(allow_fallback: bool = False, power_watts: float = 0.0)
             if hasattr(psutil, "sensors_temperatures"):
                 temps = psutil.sensors_temperatures()
                 if temps:
-                    for key in ("coretemp", "k10temp", "cpu_thermal", "cpu-thermal", "soc_thermal"):
-                        if key in temps and temps[key]:
-                            val = float(temps[key][0].current)
-                            if 0.0 < val < 130.0:
-                                return round(val, 1), f"psutil_{key}", None
-                    for sensor_name, entries in temps.items():
-                        if "cpu" in sensor_name.lower() and entries:
-                            val = float(entries[0].current)
-                            if 0.0 < val < 130.0:
-                                return round(val, 1), f"psutil_{sensor_name}", None
-                    for sensor_name, entries in temps.items():
-                        if entries:
-                            val = float(entries[0].current)
-                            if 0.0 < val < 130.0:
-                                return round(val, 1), f"psutil_{sensor_name}", None
+                    recognized = ("coretemp", "k10temp", "cpu_thermal", "cpu-thermal", "soc_thermal")
+                    candidates = [(float(entry.current), name) for name, entries in temps.items()
+                                  if name in recognized or "cpu" in name.lower()
+                                  for entry in entries if entry.current is not None and 0 < float(entry.current) < 130]
+                    if candidates:
+                        val, name = max(candidates)
+                        return round(val, 1), f"psutil_{name}", None
         except Exception:
             pass
 
@@ -220,5 +219,5 @@ def get_cpu_info(allow_fallback: bool = True) -> dict:
         "is_elevated": is_admin(),
         "is_estimated_temp": is_estimated,
         "temp_available": hardware_available,
-        "available": True,
+        "available": psutil is not None,
     }

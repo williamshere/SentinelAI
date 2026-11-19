@@ -5,7 +5,6 @@ detects driver versioning and age, and provides one-click update actions.
 """
 from __future__ import annotations
 
-import datetime
 import json
 import logging
 import os
@@ -57,8 +56,7 @@ class DriverManager:
             except Exception as e:
                 logger.debug(f"PowerShell driver query error: {e}")
 
-        # Fallback / Simulated hardware driver inventory matching user's specs
-        return self._get_fallback_driver_inventory()
+        return []
 
     def _format_driver_entries(self, raw_items: list[dict]) -> list[dict[str, Any]]:
         results = []
@@ -93,63 +91,10 @@ class DriverManager:
             })
         return results
 
-    def _get_fallback_driver_inventory(self) -> list[dict[str, Any]]:
-        """Returns baseline hardware driver profile matching Erik's PC."""
-        return [
-            {
-                "device_name": "NVIDIA GeForce RTX 5070",
-                "category": "Display / GPU",
-                "version": "572.16 (Game Ready)",
-                "driver_date": "2026-08-15",
-                "manufacturer": "NVIDIA",
-                "status": "Up to date",
-            },
-            {
-                "device_name": "Intel(R) Core(TM) i7-12700 Processor",
-                "category": "Processor / CPU",
-                "version": "10.0.26100.1",
-                "driver_date": "2026-05-20",
-                "manufacturer": "Intel Corporation",
-                "status": "Nominal",
-            },
-            {
-                "device_name": "Gigabyte Z790 Aorus Elite AX Chipset PCIe",
-                "category": "Motherboard / Chipset",
-                "version": "10.1.19600.8418",
-                "driver_date": "2026-04-12",
-                "manufacturer": "Intel / GIGABYTE",
-                "status": "Nominal",
-            },
-            {
-                "device_name": "Realtek Gaming 2.5GbE Family Controller",
-                "category": "Network / LAN",
-                "version": "1125.18.312.2026",
-                "driver_date": "2026-03-28",
-                "manufacturer": "Realtek",
-                "status": "Nominal",
-            },
-            {
-                "device_name": "Standard NVM Express Controller",
-                "category": "Storage Controller",
-                "version": "10.0.26100.1150",
-                "driver_date": "2026-06-01",
-                "manufacturer": "Standard NVMe",
-                "status": "Nominal",
-            },
-            {
-                "device_name": "Realtek High Definition Audio",
-                "category": "Audio / Sound",
-                "version": "6.0.9655.1",
-                "driver_date": "2026-02-14",
-                "manufacturer": "Realtek",
-                "status": "Nominal",
-            },
-        ]
-
     def scan_for_hardware_changes(self) -> tuple[bool, str]:
         """Runs Windows pnputil to trigger a Plug and Play hardware scan."""
         if os.name != "nt":
-            return True, "Simulated PnP hardware scan completed."
+            return False, "Hardware scan requires Windows."
         try:
             res = subprocess.run(
                 ["pnputil.exe", "/scan-devices"],
@@ -158,7 +103,9 @@ class DriverManager:
                 timeout=15.0,
                 creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
             )
-            return True, "Plug and Play scan initiated. Hardware drivers re-enumerated."
+            if res.returncode != 0:
+                return False, f"Hardware scan failed (exit {res.returncode}). Administrator access may be required."
+            return True, "Plug and Play scan completed. Hardware drivers re-enumerated."
         except Exception as e:
             return False, f"Hardware scan error: {e}"
 
