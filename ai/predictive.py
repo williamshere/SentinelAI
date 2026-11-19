@@ -184,6 +184,7 @@ class PredictiveEngine:
 
         # 4. Generate Targeted Maintenance Recommendations
         recs = []
+        if cooling_eff < 75.0:
         if cooling_eff is None:
             recs.append("Cooling assessment unavailable; measured temperature and sustained package power are required.")
         elif cooling_eff < 75.0:
@@ -191,6 +192,7 @@ class PredictiveEngine:
         else:
             recs.append("Thermal resistance is within the generic cooling reference range; actual limits depend on the cooler.")
 
+        if gpu_hotspot_delta > GPU_HOTSPOT_WARNING_DELTA:
         if gpu_hotspot_delta is not None and gpu_hotspot_delta > GPU_HOTSPOT_WARNING_DELTA:
             recs.append("GPU hotspot spread is elevated; compare against the GPU manufacturer's limits and monitor under load.")
 
@@ -205,6 +207,7 @@ class PredictiveEngine:
             )
 
         # 5. Formulate Diagnostic Advisory
+        if cooling_eff >= 90.0 and gpu_hotspot_delta <= GPU_HOTSPOT_NOMINAL_DELTA + 3.0 and wear_pct is not None:
         if cooling_eff is None:
             advisory = "Cooling reference unavailable: measured temperature and sustained package power required. "
             advisory += "Storage SMART wear data is unavailable." if wear_pct is None else "Storage lifespan uses generic assumptions."

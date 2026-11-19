@@ -2568,6 +2568,8 @@ class SentinelDashboard(QMainWindow):
         if hasattr(self, "predictive_engine") and hasattr(self, "lbl_pred_cooling"):
             try:
                 pa = self.predictive_engine.evaluate_system(data, self._last_storage_health)
+                c_text = f"🌊 Cooling Reference Efficiency: {pa.cooling_efficiency_percent}%\nθ = {pa.cpu_thermal_resistance:.3f} °C/W • {pa.cpu_health_status}"
+                h_text = f"🔥 GPU Hotspot Spread: +{pa.gpu_hotspot_delta:.1f}°C\n{pa.gpu_contact_status}"
                 c_text = (f"Cooling reference: {pa.cooling_efficiency_percent}%\nθ = {pa.cpu_thermal_resistance:.3f} °C/W • {pa.cpu_health_status}"
                           if pa.cooling_efficiency_percent is not None else "Cooling assessment unavailable\nMeasured temperature and sustained power required")
                 h_text = (f"GPU hotspot spread: +{pa.gpu_hotspot_delta:.1f}°C\n{pa.gpu_contact_status}"

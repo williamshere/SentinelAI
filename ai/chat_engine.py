@@ -165,6 +165,11 @@ class ChatEngine:
 
         if predictive_data:
             lines.append("\n### PREDICTIVE HARDWARE DEGRADATION TELEMETRY:")
+            lines.append(
+                f"- Cooling reference efficiency: {predictive_data.get('cooling_efficiency', 95.0)}% "
+                f"(Thermal Resistance θ = {predictive_data.get('thermal_resistance', 0.22):.3f} °C/W; not a model-specific rating)"
+            )
+            lines.append(f"- GPU Hotspot Spread: +{predictive_data.get('hotspot_delta', 12.0):.1f}°C (generic reference)")
             cooling = predictive_data.get("cooling_efficiency")
             resistance = predictive_data.get("thermal_resistance")
             if cooling is not None and resistance is not None:
