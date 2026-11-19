@@ -169,7 +169,10 @@ def test_safe_cleanup_skips_recent_files_links_and_directories(tmp_path):
     folder = tmp_path / "folder"
     folder.mkdir()
     link = tmp_path / "link"
-    link.symlink_to(recent)
+    try:
+        link.symlink_to(recent)
+    except OSError as exc:
+        pytest.skip(f"Symlinks require elevated privileges on this Windows environment: {exc}")
     with patch("core.utilities.tempfile.gettempdir", return_value=str(tmp_path)):
         ok, _, _ = clean_disk_temp()
     assert ok and not old.exists()
